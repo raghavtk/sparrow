@@ -1,0 +1,23 @@
+{
+  "name": "sparrow",
+  "version": "1.0.0",
+  "description": "Sparrow — Node.js health monitor for authorized video streaming websites",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js --sites sites.txt --db results.db",
+    "check": "node src/index.js --sites sites.txt --db results.db --headless true"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.8.1",
+    "playwright": "^1.54.2",
+    "playwright-extra": "^4.3.6",
+    "puppeteer": "^24.12.1",
+    "puppeteer-extra": "^3.3.6",
+    "puppeteer-extra-plugin-adblocker": "^2.13.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2"
+  }
+}
