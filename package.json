@@ -6,13 +6,17 @@
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js --sites sites.txt --db results.db",
-    "check": "node src/index.js --sites sites.txt --db results.db --headless true"
+    "check": "node src/index.js --sites sites.txt --db results.db --headless true",
+    "server": "node server.js",
+    "dev": "concurrently -n API,UI -c cyan,magenta \"node server.js\" \"cd frontend && npm run dev\""
   },
   "engines": {
     "node": ">=20"
   },
   "dependencies": {
     "better-sqlite3": "^11.8.1",
+    "concurrently": "^9.2.1",
+    "express": "^5.2.1",
     "playwright": "^1.54.2",
     "playwright-extra": "^4.3.6",
     "puppeteer": "^24.12.1",
