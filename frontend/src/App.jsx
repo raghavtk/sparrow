@@ -78,7 +78,7 @@ export default function App() {
         className="sticky top-0 z-10 border-b border-[#0f1628]"
         style={{ background: "rgba(6,10,20,0.9)", backdropFilter: "blur(12px)" }}
       >
-        <div className="max-w-3xl mx-auto px-6 h-14 flex items-center gap-3">
+        <div className="max-w-5xl mx-auto px-6 h-14 flex items-center gap-3">
           <SparrowLogo />
           <span className="font-bold text-slate-100 tracking-tight">
             Sparrow
@@ -101,7 +101,11 @@ export default function App() {
       </header>
 
       {/* Main */}
-      <main className="flex-1 max-w-3xl mx-auto w-full px-6 py-10">
+      <main
+        className={`flex-1 mx-auto w-full px-6 py-10 ${
+          tab === "results" ? "max-w-5xl" : "max-w-3xl"
+        }`}
+      >
         {/* Hero */}
         <div className="mb-10">
           <h1 className="text-3xl font-bold text-slate-100 leading-tight">

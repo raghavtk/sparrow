@@ -1,8 +1,10 @@
 export const DEFAULTS = {
   /** Wait for a sniffed m3u8/mp4 request after each navigation. */
   streamDetectTimeoutMs: 18_000,
-  /** Hard ceiling per engine attempt for one site. */
-  siteDeadTimeoutMs: 35_000,
+  /** Per Server/Source/Mirror attempt budget (capped by remaining site timeout). */
+  sourceAttemptTimeoutMs: 10_000,
+  /** Hard ceiling per engine attempt for one site (room for dual working sources). */
+  siteDeadTimeoutMs: 48_000,
   pageNavigationTimeoutMs: 20_000,
   /** Only retries hard thrown errors — "no stream" is not retried. */
   retryAttempts: 1,
@@ -11,9 +13,15 @@ export const DEFAULTS = {
   headless: true,
   /** Cap bytes read when estimating Mbps (avoid draining huge segments). */
   sampleDownloadBytes: 256_000,
+  /** Max distinct network stream URLs kept per page probe. */
+  maxStreamCandidates: 8,
+  /** Max source attempts (default load + UI Server/Source/Mirror clicks). */
+  maxSourceAttempts: 6,
   /** Shorter budget for Puppeteer fallback after Playwright already ran. */
-  fallbackSiteDeadTimeoutMs: 22_000,
+  fallbackSiteDeadTimeoutMs: 30_000,
   fallbackStreamDetectTimeoutMs: 12_000,
+  /** UI servers ≤ this count need only 1 working source; above need 2. */
+  dualWorkingServerThreshold: 3,
   maxRedirects: 10,
   maxAdsArtifactsBeforeFlag: 7,
   realisticViewports: [

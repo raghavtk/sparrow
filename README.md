@@ -20,11 +20,16 @@ CLI and UI both drive the same in-process `runMonitor` core and write to the sam
   - cookie banners
   - basic bot protection pages (Cloudflare-style detection and delayed retry behavior)
 - Detects video stream network requests (`m3u8`, `mp4`, `webm` and relevant content types).
+- Enumerates aggregator **Server / Source / Mirror** UI controls and tries them until enough sources play:
+  - ≤3 discovered servers → stop after **1** working source
+  - ≥4 discovered servers → keep going until **2** working sources (reliability)
 - Collects metrics:
   - video HTTP status
   - TTFB (ms)
   - approximate speed for first downloaded chunk up to 1MB (Mbps)
   - playback start signal (`video.currentTime` increases)
+  - `sources_found` / `sources_tried` / `working_source` / `working_sources` for multi-source pages
+- Results UI: chronological expandable runs with exact server names and per-server breakdown.
 - Bounded site-level concurrency (default 3) with a shared Chromium browser pool so multi-site runs reuse browsers instead of relaunching per site.
 - Retry once on failures.
 - Stores all checks in SQLite (`results.db`).
@@ -103,7 +108,7 @@ Start the API and Vite UI together:
 npm run dev
 ```
 
-Then open the Vite URL printed in the terminal (usually `http://localhost:5173`). The UI proxies `/api/*` to the Express server on port 3001.
+Then open **http://localhost:5180** (Sparrow pins this port; it will fail loudly if 5180 is busy instead of hopping to 5174). The UI proxies `/api/*` to the Express server on port 3001.
 
 Or API only (serves built UI from `frontend/dist` if present):
 
@@ -156,18 +161,34 @@ Important fields:
 - `stream_started`
 - `stream_url`
 - `player_found`
+- `sources_found` (JSON: network URLs + UI Server/Source/Mirror labels)
+- `sources_tried` (JSON: per-attempt outcomes with `display_name`, TTFB, speed, play result)
+- `working_source` (JSON: best working source — lowest TTFB)
+- `working_sources` (JSON: all sources that played)
+- `target_working` (1 or 2 — reliability target for that run)
 - `ads_artifacts`
 - `bot_protection_detected`
 - `error_message`
 
+## Multi-source probing
+
+On each watch page Sparrow discovers Server/Source/Mirror controls, then tries **Auto** (no click) followed by each control until the reliability target is met:
+
+| Discovered UI servers | Target working |
+| --------------------- | -------------- |
+| 0–3                   | 1              |
+| 4+                    | 2              |
+
+The Results tab lists every run chronologically. Expand a row to see each server attempt (name, played/no play, HTTP, TTFB, speed, stream URL). Summary shows exact working names (e.g. `Vidcloud · Server 2`) and `2/2 working` when reliable.
+
 ## Classification logic
 
-- `DOWN`: major connectivity/server failure, 5xx on stream, or no usable player/stream state within timeout context.
-- `BROKEN`: site responds but player/stream behavior is invalid (no playback start).
-- `SLOW`: stream works, but TTFB or speed is poor.
+- `DOWN`: major connectivity/server failure or 5xx on the stream — not “tried several dead mirrors.”
+- `BROKEN`: site/page is up (or source UI present) but no source started playback.
+- `SLOW`: at least one source plays, but TTFB or speed is poor.
 - `REDIRECT-LOOP`: redirect count reaches configured ceiling.
 - `TOO-MANY-ADS`: ad/popup/iframe artifacts exceed threshold.
-- `WORKING`: stream discovered and playback starts with acceptable performance.
+- `WORKING`: at least one source plays with acceptable performance.
 
 ## Notes on bot protection handling
 

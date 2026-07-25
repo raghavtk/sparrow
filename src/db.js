@@ -1,6 +1,35 @@
 import Database from "better-sqlite3";
 import { nowIso } from "./utils.js";
 
+const SOURCE_COLUMNS = [
+  "sources_found",
+  "sources_tried",
+  "working_source",
+  "working_sources",
+  "target_working"
+];
+
+function ensureSourceColumns(db) {
+  const existing = new Set(
+    db.prepare(`PRAGMA table_info(health_checks)`).all().map((row) => row.name)
+  );
+  for (const column of SOURCE_COLUMNS) {
+    if (!existing.has(column)) {
+      const type = column === "target_working" ? "INTEGER" : "TEXT";
+      db.exec(`ALTER TABLE health_checks ADD COLUMN ${column} ${type}`);
+    }
+  }
+}
+
+function toJson(value) {
+  if (value == null) return null;
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return null;
+  }
+}
+
 export function initDb(dbPath) {
   const db = new Database(dbPath);
   db.pragma("journal_mode = WAL");
@@ -23,9 +52,16 @@ export function initDb(dbPath) {
       ads_artifacts INTEGER NOT NULL,
       bot_protection_detected INTEGER NOT NULL,
       error_message TEXT,
-      engine TEXT NOT NULL
+      engine TEXT NOT NULL,
+      sources_found TEXT,
+      sources_tried TEXT,
+      working_source TEXT,
+      working_sources TEXT,
+      target_working INTEGER
     );
   `);
+
+  ensureSourceColumns(db);
 
   return db;
 }
@@ -48,7 +84,12 @@ export function writeResult(db, result) {
       ads_artifacts,
       bot_protection_detected,
       error_message,
-      engine
+      engine,
+      sources_found,
+      sources_tried,
+      working_source,
+      working_sources,
+      target_working
     ) VALUES (
       @checked_at,
       @site_url,
@@ -65,7 +106,12 @@ export function writeResult(db, result) {
       @ads_artifacts,
       @bot_protection_detected,
       @error_message,
-      @engine
+      @engine,
+      @sources_found,
+      @sources_tried,
+      @working_source,
+      @working_sources,
+      @target_working
     )
   `);
 
@@ -85,6 +131,11 @@ export function writeResult(db, result) {
     ads_artifacts: result.ads_artifacts ?? 0,
     bot_protection_detected: result.bot_protection_detected ? 1 : 0,
     error_message: result.error_message ?? null,
-    engine: result.engine
+    engine: result.engine,
+    sources_found: toJson(result.sources_found),
+    sources_tried: toJson(result.sources_tried),
+    working_source: toJson(result.working_source),
+    working_sources: toJson(result.working_sources),
+    target_working: result.target_working ?? null
   });
 }

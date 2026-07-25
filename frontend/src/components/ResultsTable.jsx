@@ -22,8 +22,11 @@ function StatusBadge({ status }) {
 }
 
 function fmt(val, unit = "") {
-  if (val == null) return <span className="text-[#2d4060]">—</span>;
-  return `${typeof val === "number" ? val.toFixed(unit === "ms" ? 0 : 1) : val}${unit}`;
+  if (val == null || val === "") return <span className="text-[#2d4060]">—</span>;
+  if (typeof val === "number") {
+    return `${val.toFixed(unit === "ms" ? 0 : 1)}${unit}`;
+  }
+  return `${val}${unit}`;
 }
 
 function timeAgo(iso) {
@@ -32,6 +35,247 @@ function timeAgo(iso) {
   if (diff < 3600) return `${Math.round(diff / 60)}m ago`;
   if (diff < 86400) return `${Math.round(diff / 3600)}h ago`;
   return new Date(iso).toLocaleDateString();
+}
+
+function displayName(source) {
+  if (!source) return null;
+  if (source.display_name) return source.display_name;
+  if (source.label && source.label.toLowerCase() !== "default") return source.label;
+  if (source.stream_url) {
+    try {
+      return `Auto · ${new URL(source.stream_url).hostname}`;
+    } catch {
+      return "Auto";
+    }
+  }
+  if (source.kind === "default" || source.label === "default") return "Auto";
+  return source.label || "Unknown";
+}
+
+function workingSummary(row) {
+  const working = Array.isArray(row.working_sources)
+    ? row.working_sources
+    : row.working_source
+      ? [row.working_source]
+      : [];
+  const target = row.target_working ?? 1;
+  const names = working.map(displayName).filter(Boolean);
+  if (!names.length) {
+    const tried = Array.isArray(row.sources_tried) ? row.sources_tried.length : 0;
+    return tried ? `0/${target} working` : null;
+  }
+  return {
+    names,
+    ratio: `${names.length}/${target}`,
+    reliable: names.length >= target && target >= 2,
+    partial: names.length > 0 && names.length < target && target > 1,
+  };
+}
+
+function reliabilityNote(row) {
+  const summary = workingSummary(row);
+  if (!summary || typeof summary === "string") return null;
+  if (summary.reliable) return "Reliable (2+ working)";
+  if (summary.partial) return `Partial (${summary.ratio} working)`;
+  return null;
+}
+
+function attemptOutcome(attempt) {
+  if (attempt.error === "click_failed") return { label: "Click failed", color: "#f97316" };
+  if (attempt.stream_started) return { label: "Played", color: "#2dd4bf" };
+  return { label: "No play", color: "#94a3b8" };
+}
+
+function truncateUrl(url, max = 48) {
+  if (!url) return null;
+  return url.length > max ? `${url.slice(0, max)}…` : url;
+}
+
+function WorkingCell({ row }) {
+  const summary = workingSummary(row);
+  if (!summary) return <span className="text-[#2d4060]">—</span>;
+  if (typeof summary === "string") {
+    return <span className="text-slate-500 text-xs">{summary}</span>;
+  }
+  return (
+    <div className="min-w-0">
+      <div className="text-slate-300 text-xs font-medium truncate" title={summary.names.join(", ")}>
+        {summary.names.join(" · ")}
+      </div>
+      <div className="text-[10px] mt-0.5" style={{ color: summary.reliable ? "#2dd4bf" : "#4a6080" }}>
+        {summary.ratio} working
+        {summary.reliable ? " · reliable" : summary.partial ? " · partial" : ""}
+      </div>
+    </div>
+  );
+}
+
+function SourceBreakdown({ row }) {
+  const tried = Array.isArray(row.sources_tried) ? row.sources_tried : [];
+  const note = reliabilityNote(row);
+
+  if (!tried.length) {
+    return (
+      <p className="text-xs text-[#4a6080] px-4 py-3">
+        No server attempts recorded for this run.
+        {row.error_message ? ` ${row.error_message}` : ""}
+      </p>
+    );
+  }
+
+  return (
+    <div className="px-4 pb-4 pt-1">
+      {note && (
+        <p
+          className="text-[11px] mb-2 font-medium"
+          style={{ color: note.startsWith("Reliable") ? "#2dd4bf" : "#fbbf24" }}
+        >
+          {note}
+        </p>
+      )}
+      <div className="overflow-x-auto rounded-lg border border-[#1e2d4f]">
+        <table className="w-full text-xs border-collapse">
+          <thead>
+            <tr style={{ background: "#0a0e1a" }}>
+              {["Server", "Outcome", "HTTP", "TTFB", "Speed", "Stream"].map((h) => (
+                <th
+                  key={h}
+                  className="px-3 py-2 text-left font-semibold uppercase tracking-wider"
+                  style={{ color: "#4a6080" }}
+                >
+                  {h}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {tried.map((attempt, idx) => {
+              const outcome = attemptOutcome(attempt);
+              const played = Boolean(attempt.stream_started);
+              return (
+                <tr
+                  key={`${displayName(attempt)}-${idx}`}
+                  className="border-t border-[#0f1628]"
+                  style={{ background: played ? "rgba(45,212,191,0.06)" : "transparent" }}
+                >
+                  <td className="px-3 py-2 text-slate-200 font-medium whitespace-nowrap">
+                    {displayName(attempt)}
+                  </td>
+                  <td className="px-3 py-2" style={{ color: outcome.color }}>
+                    {outcome.label}
+                  </td>
+                  <td className="px-3 py-2 text-slate-400">{fmt(attempt.http_status)}</td>
+                  <td className="px-3 py-2 text-slate-400">
+                    {fmt(attempt.ttfb_ms, "ms")}
+                  </td>
+                  <td className="px-3 py-2 text-slate-400">
+                    {fmt(attempt.speed_mbps, " Mbps")}
+                  </td>
+                  <td className="px-3 py-2 text-[#4a6080] max-w-[14rem] truncate font-mono">
+                    {attempt.stream_url ? (
+                      <span title={attempt.stream_url}>{truncateUrl(attempt.stream_url)}</span>
+                    ) : (
+                      <span className="text-[#2d4060]">—</span>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      {row.stream_url && (
+        <p className="mt-2 text-[10px] text-[#2d4060] font-mono truncate" title={row.stream_url}>
+          Best stream: {row.stream_url}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function ResultRow({ row }) {
+  const [open, setOpen] = useState(false);
+  let hostname = row.site_url;
+  try {
+    hostname = new URL(row.site_url).hostname;
+  } catch {
+    // keep raw
+  }
+
+  return (
+    <>
+      <tr
+        className="border-b border-[#0f1628] cursor-pointer transition-colors duration-100"
+        style={{ background: open ? "#0f1628" : "transparent" }}
+        onClick={() => setOpen((v) => !v)}
+        onMouseEnter={(e) => {
+          if (!open) e.currentTarget.style.background = "#0c1220";
+        }}
+        onMouseLeave={(e) => {
+          if (!open) e.currentTarget.style.background = "transparent";
+        }}
+      >
+        <td className="px-3 py-3 w-8 text-[#4a6080]">
+          <svg
+            width="12"
+            height="12"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2.5"
+            style={{
+              transform: open ? "rotate(90deg)" : "rotate(0deg)",
+              transition: "transform 150ms ease",
+            }}
+          >
+            <polyline points="9 18 15 12 9 6" />
+          </svg>
+        </td>
+        <td className="px-3 py-3 max-w-[11rem]">
+          <a
+            href={row.site_url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-slate-300 hover:text-teal-400 transition-colors duration-150 truncate block"
+            title={row.site_url}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {hostname}
+          </a>
+        </td>
+        <td className="px-3 py-3">
+          <StatusBadge status={row.classification} />
+        </td>
+        <td className="px-3 py-3 max-w-[12rem]">
+          <WorkingCell row={row} />
+        </td>
+        <td className="px-3 py-3 text-slate-400 whitespace-nowrap">
+          {fmt(row.ttfb_ms, "ms")}
+        </td>
+        <td className="px-3 py-3 text-slate-400 whitespace-nowrap">
+          {fmt(row.speed_mbps, " Mbps")}
+        </td>
+        <td className="px-3 py-3">
+          <span
+            className="text-xs px-2 py-0.5 rounded font-mono"
+            style={{ background: "#0f1628", color: "#4a6080" }}
+          >
+            {row.engine}
+          </span>
+        </td>
+        <td className="px-3 py-3 text-[#4a6080] text-xs whitespace-nowrap">
+          {timeAgo(row.checked_at)}
+        </td>
+      </tr>
+      {open && (
+        <tr className="border-b border-[#0f1628]">
+          <td colSpan={8} style={{ background: "#0a0e1a" }}>
+            <SourceBreakdown row={row} />
+          </td>
+        </tr>
+      )}
+    </>
+  );
 }
 
 export default function ResultsTable({ refreshTick }) {
@@ -58,11 +302,7 @@ export default function ResultsTable({ refreshTick }) {
   if (loading) {
     return (
       <div className="flex items-center justify-center py-16 gap-3 text-sm text-[#2d4060]">
-        <svg
-          className="animate-spin w-4 h-4"
-          fill="none"
-          viewBox="0 0 24 24"
-        >
+        <svg className="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24">
           <circle
             className="opacity-25"
             cx="12"
@@ -104,10 +344,11 @@ export default function ResultsTable({ refreshTick }) {
       <table className="w-full text-sm border-collapse">
         <thead>
           <tr className="border-b border-[#1e2d4f]" style={{ background: "#0a0e1a" }}>
-            {["Site", "Status", "TTFB", "Speed", "Engine", "Checked"].map((h) => (
+            <th className="px-3 py-3 w-8" />
+            {["Site", "Status", "Working", "TTFB", "Speed", "Engine", "Checked"].map((h) => (
               <th
                 key={h}
-                className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider"
+                className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider"
                 style={{ color: "#4a6080" }}
               >
                 {h}
@@ -117,45 +358,7 @@ export default function ResultsTable({ refreshTick }) {
         </thead>
         <tbody>
           {results.map((row) => (
-            <tr
-              key={row.id}
-              className="border-b border-[#0f1628] transition-colors duration-100"
-              style={{ background: "transparent" }}
-              onMouseEnter={(e) => (e.currentTarget.style.background = "#0f1628")}
-              onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
-            >
-              <td className="px-4 py-3 max-w-xs">
-                <a
-                  href={row.site_url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-slate-300 hover:text-teal-400 transition-colors duration-150 truncate block"
-                  title={row.site_url}
-                >
-                  {new URL(row.site_url).hostname}
-                </a>
-              </td>
-              <td className="px-4 py-3">
-                <StatusBadge status={row.classification} />
-              </td>
-              <td className="px-4 py-3 text-slate-400">
-                {fmt(row.ttfb_ms, "ms")}
-              </td>
-              <td className="px-4 py-3 text-slate-400">
-                {fmt(row.speed_mbps, " Mbps")}
-              </td>
-              <td className="px-4 py-3">
-                <span
-                  className="text-xs px-2 py-0.5 rounded font-mono"
-                  style={{ background: "#0f1628", color: "#4a6080" }}
-                >
-                  {row.engine}
-                </span>
-              </td>
-              <td className="px-4 py-3 text-[#4a6080] text-xs whitespace-nowrap">
-                {timeAgo(row.checked_at)}
-              </td>
-            </tr>
+            <ResultRow key={row.id} row={row} />
           ))}
         </tbody>
       </table>

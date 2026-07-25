@@ -123,7 +123,26 @@ app.get("/api/results", (_req, res) => {
       .prepare(
         "SELECT * FROM health_checks ORDER BY checked_at DESC LIMIT 200"
       )
-      .all();
+      .all()
+      .map((row) => {
+        const parseJson = (value) => {
+          if (value == null || value === "") return null;
+          if (typeof value !== "string") return value;
+          try {
+            return JSON.parse(value);
+          } catch {
+            return null;
+          }
+        };
+        return {
+          ...row,
+          sources_found: parseJson(row.sources_found) ?? [],
+          sources_tried: parseJson(row.sources_tried) ?? [],
+          working_source: parseJson(row.working_source),
+          working_sources: parseJson(row.working_sources) ?? [],
+          target_working: row.target_working ?? null
+        };
+      });
     db.close();
     res.json({ results });
   } catch {

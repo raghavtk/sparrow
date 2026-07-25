@@ -6,6 +6,7 @@ import { createBrowserPool } from "./browsers/pool.js";
 import { runWithPlaywright } from "./runners/playwrightRunner.js";
 import { runWithPuppeteer } from "./runners/puppeteerRunner.js";
 import { normalizeUrl, nowIso, safeNum, formatProbeSummary } from "./utils.js";
+import { meetsWorkingTarget } from "./probers/common.js";
 
 function isHardDown(probed) {
   const msg = probed?.error_message ?? "";
@@ -18,8 +19,10 @@ function preferProbe(a, b) {
   if (!a) return b;
   if (!b) return a;
   const score = (p) =>
-    (p.stream_started ? 8 : 0) +
+    (Array.isArray(p.working_sources) ? p.working_sources.length * 10 : 0) +
+    (p.stream_started || p.working_source ? 16 : 0) +
     (p.stream_url ? 4 : 0) +
+    (Array.isArray(p.sources_found) ? Math.min(p.sources_found.length, 3) : 0) +
     (p.player_found ? 2 : 0) +
     (p.is_up ? 1 : 0);
   return score(b) > score(a) ? b : a;
@@ -56,8 +59,9 @@ async function probeOnce(site, options, log, signal) {
   assertNotAborted(signal);
   log.debug(`Playwright finished: ${formatProbeSummary(primary)}`);
 
-  if (primary.stream_started || primary.stream_url) {
-    log.success(`Playwright detected stream activity for ${site}`);
+  // Exit early only when enough working sources met the reliability target.
+  if (meetsWorkingTarget(primary, options)) {
+    log.success(`Playwright met working-source target for ${site}`);
     return primary;
   }
 
@@ -66,7 +70,13 @@ async function probeOnce(site, options, log, signal) {
     return primary;
   }
 
-  log.step(`Playwright found no stream; launching Puppeteer fallback`);
+  if (primary.working_sources?.length) {
+    log.step(
+      `Playwright found ${primary.working_sources.length}/${primary.target_working ?? "?"} working; trying Puppeteer for more`
+    );
+  } else {
+    log.step(`Playwright found no stream; launching Puppeteer fallback`);
+  }
   const fallback = await runWithPuppeteer(site, {
     ...options,
     log,
@@ -77,8 +87,8 @@ async function probeOnce(site, options, log, signal) {
   assertNotAborted(signal);
   log.debug(`Puppeteer finished: ${formatProbeSummary(fallback)}`);
 
-  if (fallback.stream_started || fallback.stream_url) {
-    log.success(`Puppeteer detected stream activity for ${site}`);
+  if (meetsWorkingTarget(fallback, options)) {
+    log.success(`Puppeteer met working-source target for ${site}`);
     return fallback;
   }
 
@@ -120,6 +130,11 @@ async function probeWithRetry(site, options, log, signal) {
     redirects: 0,
     ads_artifacts: 0,
     bot_protection_detected: false,
+    sources_found: [],
+    sources_tried: [],
+    working_source: null,
+    working_sources: [],
+    target_working: 1,
     error_message: `Probe failed after retry: ${lastError?.message ?? "unknown error"}`,
     engine: "none"
   };
@@ -141,9 +156,28 @@ function buildOutputRow(site, probed, classification) {
     redirects: probed.redirects,
     ads_artifacts: probed.ads_artifacts,
     bot_protection_detected: probed.bot_protection_detected,
+    sources_found: probed.sources_found ?? [],
+    sources_tried: probed.sources_tried ?? [],
+    working_source: probed.working_source ?? null,
+    working_sources: probed.working_sources ?? [],
+    target_working: probed.target_working ?? null,
     error_message: probed.error_message || null,
     engine: probed.engine
   };
+}
+
+function formatSourcesCell(row) {
+  const workingList = Array.isArray(row.working_sources) ? row.working_sources : [];
+  const names = workingList
+    .map((w) => w.display_name || w.label)
+    .filter(Boolean);
+  const tried = Array.isArray(row.sources_tried) ? row.sources_tried.length : 0;
+  const target = row.target_working ?? 1;
+  if (names.length) {
+    return `${names.join(" + ")} (${names.length}/${target})`;
+  }
+  if (tried) return `0/${target} working (${tried} tried)`;
+  return "-";
 }
 
 function reportRowsForConsole(rows) {
@@ -152,6 +186,7 @@ function reportRowsForConsole(rows) {
     status: r.classification,
     up: r.is_up ? "yes" : "no",
     stream: r.stream_started ? "started" : "no",
+    sources: formatSourcesCell(r),
     http: r.http_status ?? "-",
     ttfb_ms: r.ttfb_ms ? Math.round(r.ttfb_ms) : "-",
     speed_mbps: r.speed_mbps ? r.speed_mbps.toFixed(2) : "-",
@@ -329,6 +364,15 @@ export async function runMonitor({
       }
       if (row.stream_url) {
         log.debug(`  stream URL: ${row.stream_url}`);
+      }
+      if (Array.isArray(row.working_sources) && row.working_sources.length) {
+        log.debug(
+          `  working: ${row.working_sources.map((w) => w.display_name || w.label).join(", ")}`
+        );
+      } else if (Array.isArray(row.sources_tried) && row.sources_tried.length) {
+        log.debug(
+          `  sources: ${row.sources_found?.length ?? 0} found, ${row.sources_tried.length} tried, none played`
+        );
       }
 
       emit(onEvent, {

@@ -66,6 +66,20 @@ export function formatProbeSummary(probed) {
     `stream=${probed.stream_started ? "started" : "no"}`,
     `engine=${probed.engine}`
   ];
+  const found = Array.isArray(probed.sources_found) ? probed.sources_found.length : 0;
+  const tried = Array.isArray(probed.sources_tried) ? probed.sources_tried.length : 0;
+  const working = Array.isArray(probed.working_sources) ? probed.working_sources.length : 0;
+  const target = probed.target_working ?? 1;
+  if (found || tried || working) {
+    parts.push(`sources=${working}/${target} working, ${tried} tried`);
+  }
+  if (working) {
+    const names = probed.working_sources
+      .map((w) => w.display_name || w.label)
+      .filter(Boolean)
+      .join("+");
+    if (names) parts.push(`servers=${names}`);
+  }
   if (probed.http_status) parts.push(`http=${probed.http_status}`);
   if (probed.ttfb_ms) parts.push(`ttfb=${Math.round(probed.ttfb_ms)}ms`);
   if (probed.bot_protection_detected) parts.push("bot-protection=yes");
