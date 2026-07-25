@@ -16,7 +16,8 @@ export function createBaseState() {
     adsArtifacts: 0,
     botProtectionDetected: false,
     errors: [],
-    finalUrl: null
+    finalUrl: null,
+    contentTitle: null
   };
 }
 
@@ -82,6 +83,285 @@ export function hostFromUrl(url) {
   } catch {
     return null;
   }
+}
+
+/** Guess a human title from a watch URL slug (fallback when the page is opaque). */
+export function guessTitleFromUrl(url) {
+  if (!url) return null;
+  try {
+    const u = new URL(url);
+    const parts = u.pathname.split("/").filter(Boolean);
+    const skip = new Set([
+      "watch",
+      "movie",
+      "movies",
+      "film",
+      "title",
+      "info",
+      "player",
+      "pages",
+      "stream",
+      "embed",
+      "watch-movie"
+    ]);
+    let slug = null;
+    for (let i = parts.length - 1; i >= 0; i -= 1) {
+      const part = decodeURIComponent(parts[i]).replace(/\.(html?|php)$/i, "");
+      if (!part || skip.has(part.toLowerCase())) continue;
+      if (/^\d+$/.test(part)) continue;
+      slug = part;
+      break;
+    }
+    if (!slug) return null;
+    // "936075-michael" / "the-matrix-1999"
+    slug = slug.replace(/^\d{3,8}[-_]+/, "");
+    slug = slug.replace(/[-_+]+/g, " ").replace(/\s+/g, " ").trim();
+    if (!slug || slug.length < 2) return null;
+    return titleCaseWords(slug).slice(0, 120);
+  } catch {
+    return null;
+  }
+}
+
+function titleCaseWords(text) {
+  return String(text)
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((w) => {
+      if (/^\d{4}$/.test(w)) return w;
+      if (w.length <= 2 && w.toLowerCase() !== "a") return w.toLowerCase();
+      return w[0].toUpperCase() + w.slice(1).toLowerCase();
+    })
+    .join(" ");
+}
+
+function brandTokensFromUrl(pageUrl) {
+  if (!pageUrl) return [];
+  try {
+    const host = new URL(pageUrl).hostname.replace(/^www\./i, "");
+    const base = host.split(".")[0] || "";
+    const tokens = new Set([host, base]);
+    // flickystream → flicky stream variants
+    const spaced = base.replace(/([a-z])([A-Z])/g, "$1 $2").replace(/stream|flix|play|cinema|movies?/gi, "").trim();
+    if (spaced) tokens.add(spaced);
+    tokens.add(base.replace(/(stream|flix|movies?|play|tv|watch)$/i, ""));
+    return [...tokens].filter((t) => t && t.length >= 3);
+  } catch {
+    return [];
+  }
+}
+
+/** True when the string is basically the site brand (FlickyStream, Cinezo, …). */
+export function isLikelySiteBrand(title, pageUrl) {
+  if (!title) return true;
+  const compact = title.toLowerCase().replace(/[^a-z0-9]/g, "");
+  if (!compact) return true;
+  for (const brand of brandTokensFromUrl(pageUrl)) {
+    const b = brand.toLowerCase().replace(/[^a-z0-9]/g, "");
+    if (!b || b.length < 3) continue;
+    if (compact === b || compact.includes(b) || b.includes(compact)) return true;
+  }
+  // Generic streaming-site sounding single/double tokens with no year
+  if (
+    title.split(/\s+/).length <= 2 &&
+    /stream|flix|cinema|movies?|watch|play$/i.test(compact) &&
+    !/\d{4}/.test(title)
+  ) {
+    return true;
+  }
+  return false;
+}
+
+export function scoreMovieTitle(title, pageUrl, source = "page") {
+  if (!title) return -1;
+  if (isLikelySiteBrand(title, pageUrl)) return 0;
+  let score = 10;
+  if (source === "jsonld") score += 20; // schema.org Movie/TV name is authoritative
+  if (source === "url") score += 12;
+  if (source === "page") score += 6;
+  if (source === "og") score += 8;
+  if (/\(\s*(19|20)\d{2}\s*\)/.test(title) || /\b(19|20)\d{2}\b/.test(title)) score += 4;
+  if (title.split(/\s+/).length >= 2) score += 2;
+  if (title.length >= 2 && title.length <= 80) score += 1;
+  // Prefer concise titles over review blurbs
+  if (title.length > 80) score -= 8;
+  return score;
+}
+
+export function cleanContentTitle(raw, pageUrl) {
+  if (!raw) return null;
+  let t = String(raw).trim().replace(/\s+/g, " ");
+  if (!t) return null;
+
+  // Prefer the left side of "Title | Site" / "Title - Site" / "Title — Watch"
+  const parts = t.split(/\s+[|\u2013\u2014]\s+|\s+-\s+/);
+  if (parts.length > 1) {
+    const ranked = parts
+      .map((p) => p.trim())
+      .filter(Boolean)
+      .map((p) => ({ p, score: scoreMovieTitle(p, pageUrl, "page") }))
+      .sort((a, b) => b.score - a.score);
+    if (ranked[0]?.score > 0) t = ranked[0].p;
+    else t = parts[0].trim();
+  }
+
+  t = t.replace(
+    /\b(watch(\s+online)?|online\s+free|full\s+movie|streaming|free\s+online|hd)\b/gi,
+    ""
+  );
+  t = t.replace(/\s{2,}/g, " ").replace(/^[\s\-–—|:]+|[\s\-–—|:]+$/g, "");
+
+  try {
+    if (pageUrl) {
+      const host = new URL(pageUrl).hostname.replace(/^www\./i, "");
+      const hostRe = new RegExp(host.replace(/\./g, "\\."), "ig");
+      t = t.replace(hostRe, "").replace(/\s{2,}/g, " ").trim();
+      for (const brand of brandTokensFromUrl(pageUrl)) {
+        const re = new RegExp(`\\b${brand.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "ig");
+        t = t.replace(re, "").replace(/\s{2,}/g, " ").trim();
+      }
+    }
+  } catch {
+    // ignore
+  }
+
+  if (!t || /^(home|movies?|watch|streaming)$/i.test(t)) return null;
+  if (isLikelySiteBrand(t, pageUrl)) return null;
+  return t.slice(0, 120);
+}
+
+/**
+ * Pull movie/TV name candidates from the rendered DOM:
+ * JSON-LD Movie, og:title, h1, poster alt, etc.
+ */
+async function collectTitleCandidatesFromPage(page, pageUrl) {
+  const rawList = await page.evaluate(() => {
+    const out = [];
+    const push = (value, source) => {
+      const s = (value || "").toString().trim();
+      if (s) out.push({ value: s, source });
+    };
+
+    // schema.org Movie / TVSeries — strongest on-page signal
+    for (const script of document.querySelectorAll('script[type="application/ld+json"]')) {
+      try {
+        const data = JSON.parse(script.textContent || "null");
+        const nodes = Array.isArray(data) ? data : [data];
+        for (const node of nodes) {
+          if (!node || typeof node !== "object") continue;
+          const graph = Array.isArray(node["@graph"]) ? node["@graph"] : [node];
+          for (const item of graph) {
+            if (!item || typeof item !== "object") continue;
+            const type = item["@type"];
+            const types = Array.isArray(type) ? type : [type];
+            if (types.some((t) => /^(Movie|TVSeries|TVEpisode|VideoObject)$/i.test(String(t)))) {
+              push(item.name || item.headline, "jsonld");
+            }
+          }
+        }
+      } catch {
+        // ignore bad json-ld
+      }
+    }
+
+    push(document.querySelector('meta[property="og:title"]')?.content, "og");
+    push(document.querySelector('meta[name="twitter:title"]')?.content, "og");
+    push(document.querySelector('meta[name="title"]')?.content, "og");
+    push(document.querySelector('[itemprop="name"]')?.getAttribute("content"), "page");
+    push(document.querySelector('[itemprop="name"]')?.textContent, "page");
+
+    for (const h of document.querySelectorAll("h1")) {
+      push(h.innerText || h.textContent, "page");
+    }
+    for (const h of document.querySelectorAll("h2")) {
+      const text = (h.innerText || h.textContent || "").trim();
+      if (text && text.length <= 80) push(text, "page");
+    }
+
+    for (const el of document.querySelectorAll(
+      ".movie-title, .film-title, .media-title, .title, [class*='movie-title'], [class*='film-title'], [class*='detail-title']"
+    )) {
+      push(el.innerText || el.textContent, "page");
+    }
+
+    // Poster / hero image alt often is exactly the title
+    for (const img of document.querySelectorAll(
+      "img[alt], img[class*='poster'], img[class*='Poster']"
+    )) {
+      const alt = (img.getAttribute("alt") || "").trim();
+      if (alt && alt.length >= 2 && alt.length <= 80) push(alt, "page");
+    }
+
+    push(document.title, "og");
+    return out;
+  });
+
+  const scored = [];
+  for (const { value, source } of rawList) {
+    const cleaned = cleanContentTitle(value, pageUrl);
+    if (!cleaned) continue;
+    scored.push({
+      title: cleaned,
+      score: scoreMovieTitle(cleaned, pageUrl, source),
+      source
+    });
+  }
+  scored.sort((a, b) => b.score - a.score);
+  return scored;
+}
+
+/** Read movie title from the live page; wait briefly for JS-rendered SPA titles. */
+export async function extractContentTitle(page, pageUrl) {
+  const fromUrl = guessTitleFromUrl(pageUrl);
+  try {
+    const deadline = Date.now() + 2_800;
+    let best = null;
+    while (Date.now() <= deadline) {
+      const scored = await collectTitleCandidatesFromPage(page, pageUrl);
+      if (scored[0]?.score > 0) {
+        best = scored[0].title;
+        // json-ld / strong og hit — no need to keep waiting
+        if (scored[0].score >= 18) break;
+      }
+      await sleep(350);
+    }
+    if (best) return best;
+    return fromUrl;
+  } catch {
+    return fromUrl;
+  }
+}
+
+/** Capture movie title into probe state — page content first, URL as fallback. */
+export async function captureContentTitle(page, state, pageUrl, log) {
+  const url = pageUrl || state.finalUrl;
+  const fromUrl = guessTitleFromUrl(url) || guessTitleFromUrl(state.finalUrl);
+  const fromPage = await extractContentTitle(page, url);
+
+  const candidates = [];
+  if (fromPage) {
+    candidates.push({ title: fromPage, score: scoreMovieTitle(fromPage, url, "page") + 4 });
+  }
+  if (fromUrl) {
+    candidates.push({ title: fromUrl, score: scoreMovieTitle(fromUrl, url, "url") });
+  }
+  if (state.contentTitle && !isLikelySiteBrand(state.contentTitle, url)) {
+    candidates.push({
+      title: state.contentTitle,
+      score: scoreMovieTitle(state.contentTitle, url, "page")
+    });
+  }
+
+  candidates.sort((a, b) => b.score - a.score);
+  const best = candidates.find((c) => c.score > 0);
+  if (best) state.contentTitle = best.title;
+
+  if (state.contentTitle) {
+    log?.debug?.(`Movie title: ${state.contentTitle}`);
+  } else {
+    log?.debug?.("Movie title: (not found on page or URL)");
+  }
+  return state.contentTitle;
 }
 
 /** Human-facing name — never raw "default". */
@@ -316,16 +596,70 @@ async function resetPlayback(page) {
 }
 
 /**
+ * Open collapsed Server/Source dropdowns so hidden options become discoverable.
+ */
+export async function openSourceMenus(page, log) {
+  try {
+    const clicked = await page.evaluate(() => {
+      const triggerRe =
+        /servers?|sources?|mirrors?|providers?|select\s*(server|source)|change\s*(server|source)|video\s*server/i;
+      const skipRe = /accept|cookie|sign|login|share|download|close|×|✕/i;
+      const candidates = [
+        ...document.querySelectorAll(
+          'button, a, [role="button"], [aria-haspopup], select, summary, .dropdown-toggle, [class*="dropdown"]'
+        )
+      ];
+      let n = 0;
+      for (const el of candidates) {
+        if (!(el instanceof HTMLElement)) continue;
+        if (el.tagName === "SELECT") {
+          // Focus select so options exist in DOM for discovery; don't change value yet.
+          el.focus();
+          n += 1;
+          continue;
+        }
+        const label = (el.innerText || el.getAttribute("aria-label") || el.title || "")
+          .trim()
+          .replace(/\s+/g, " ")
+          .slice(0, 60);
+        if (!label || label.length > 40 || skipRe.test(label)) continue;
+        if (!triggerRe.test(label) && !/server|source|mirror|provider/i.test(el.className || "")) {
+          continue;
+        }
+        const style = window.getComputedStyle(el);
+        if (style.display === "none" || style.visibility === "hidden") continue;
+        try {
+          el.click();
+          n += 1;
+        } catch {
+          // ignore
+        }
+        if (n >= 4) break;
+      }
+      return n;
+    });
+    if (clicked) {
+      log?.debug?.(`Opened ${clicked} server/source menu trigger(s)`);
+      await humanizeDelay(250, 500);
+    }
+    return clicked;
+  } catch {
+    return 0;
+  }
+}
+
+/**
  * Tag visible Server / Source / Mirror-style controls so we can click them later.
+ * Includes <select> options and short numbered labels near player chrome.
  */
 export async function discoverSourceControls(page, maxControls = 12) {
   try {
     return await page.evaluate((limit) => {
       const labelRe =
-        /server|source|mirror|hd\s*\d+|vip|embed|player\s*\d+|option\s*\d+|vidcloud|filemoon|streamtape|dood|mixdrop|mp4upload|upstream|voe|rabbit|luluvdo|supermega/i;
+        /server|source|mirror|hd\s*\d+|vip|embed|player\s*\d+|option\s*\d+|vidcloud|filemoon|streamtape|dood|mixdrop|mp4upload|upstream|voe|rabbit|luluvdo|supermega|^s\s*\d+$|^server\s*\d+$|^\d+$/i;
       const classRe = /server|source|mirror|embed|provider|host|player-btn|btn-server/i;
       const skipRe =
-        /accept|cookie|sign|login|register|subscribe|share|download|trailer|facebook|twitter|reddit|discord/i;
+        /accept|cookie|sign|login|register|subscribe|share|download|trailer|facebook|twitter|reddit|discord|^close$|closing|×|✕|dismiss|cancel|menu|home|search/i;
       const nodes = [
         ...document.querySelectorAll(
           [
@@ -333,6 +667,7 @@ export async function discoverSourceControls(page, maxControls = 12) {
             "a",
             '[role="tab"]',
             '[role="button"]',
+            '[role="option"]',
             "[data-server]",
             "[data-source]",
             "[data-provider]",
@@ -344,18 +679,54 @@ export async function discoverSourceControls(page, maxControls = 12) {
             "[class*='source']",
             "[class*='mirror']",
             "[class*='provider']",
-            "li"
+            "li",
+            "select option"
           ].join(",")
         )
       ];
       const seen = new Set();
       const out = [];
 
+      const pushControl = (el, label) => {
+        const cleaned = label.trim().replace(/\s+/g, " ").slice(0, 80);
+        if (!cleaned || cleaned.length > 40) return;
+        if (skipRe.test(cleaned)) return;
+        // Bare numbers only if nested under a server/source-ish parent.
+        if (/^\d{1,2}$/.test(cleaned)) {
+          const parentText = (el.closest("[class*='server'], [class*='source'], [class*='mirror'], [class*='provider'], select, ul, ol")?.className || "") +
+            (el.parentElement?.className || "");
+          if (!classRe.test(String(parentText)) && el.tagName !== "OPTION") return;
+        }
+        const className = typeof el.className === "string" ? el.className : "";
+        const matchesLabel = labelRe.test(cleaned);
+        const matchesClass = classRe.test(className) || el.tagName === "OPTION";
+        if (!matchesLabel && !matchesClass) return;
+        if (!matchesLabel && matchesClass && cleaned.split(" ").length > 4) return;
+
+        const key = cleaned.toLowerCase();
+        if (seen.has(key)) return;
+        seen.add(key);
+
+        const id = `sparrow-src-${out.length}`;
+        el.setAttribute("data-sparrow-source", id);
+        out.push({ id, label: cleaned, kind: "ui", display_name: cleaned });
+      };
+
       for (const el of nodes) {
-        if (!(el instanceof HTMLElement)) continue;
+        if (!(el instanceof HTMLElement) && !(el instanceof HTMLOptionElement)) continue;
+        if (el instanceof HTMLOptionElement) {
+          if (!el.value && !el.textContent?.trim()) continue;
+          // Skip placeholder options
+          const optLabel = (el.textContent || el.label || el.value || "").trim();
+          if (!optLabel || /select|choose|pick/i.test(optLabel)) continue;
+          pushControl(el, optLabel);
+          if (out.length >= limit) break;
+          continue;
+        }
+
         const style = window.getComputedStyle(el);
-        if (style.display === "none" || style.visibility === "hidden") continue;
-        if (el.offsetParent === null && style.position !== "fixed") continue;
+        // Allow options inside open menus even if briefly visibility-hidden; skip display:none.
+        if (style.display === "none") continue;
 
         const rawLabel =
           el.getAttribute("data-server") ||
@@ -365,23 +736,7 @@ export async function discoverSourceControls(page, maxControls = 12) {
           el.title ||
           el.innerText ||
           "";
-        const label = rawLabel.trim().replace(/\s+/g, " ").slice(0, 80);
-        if (!label || label.length > 40) continue;
-        if (skipRe.test(label)) continue;
-
-        const className = typeof el.className === "string" ? el.className : "";
-        const matchesLabel = labelRe.test(label);
-        const matchesClass = classRe.test(className);
-        if (!matchesLabel && !matchesClass) continue;
-        if (!matchesLabel && matchesClass && label.split(" ").length > 4) continue;
-
-        const key = label.toLowerCase();
-        if (seen.has(key)) continue;
-        seen.add(key);
-
-        const id = `sparrow-src-${out.length}`;
-        el.setAttribute("data-sparrow-source", id);
-        out.push({ id, label, kind: "ui", display_name: label });
+        pushControl(el, rawLabel);
         if (out.length >= limit) break;
       }
       return out;
@@ -394,6 +749,26 @@ export async function discoverSourceControls(page, maxControls = 12) {
 async function clickSourceControl(page, controlId) {
   const selector = `[data-sparrow-source="${controlId}"]`;
   try {
+    const handled = await page.evaluate((id) => {
+      const el = document.querySelector(`[data-sparrow-source="${id}"]`);
+      if (!el) return false;
+      if (el instanceof HTMLOptionElement) {
+        const select = el.parentElement;
+        if (select instanceof HTMLSelectElement) {
+          select.value = el.value;
+          select.dispatchEvent(new Event("input", { bubbles: true }));
+          select.dispatchEvent(new Event("change", { bubbles: true }));
+          return true;
+        }
+      }
+      el.click();
+      return true;
+    }, controlId);
+    if (handled) return true;
+  } catch {
+    // fall through
+  }
+  try {
     if (typeof page.locator === "function") {
       const el = page.locator(selector).first();
       await el.click({ timeout: 1500 });
@@ -404,14 +779,7 @@ async function clickSourceControl(page, controlId) {
     await handle.click();
     return true;
   } catch {
-    try {
-      await page.evaluate((id) => {
-        document.querySelector(`[data-sparrow-source="${id}"]`)?.click();
-      }, controlId);
-      return true;
-    } catch {
-      return false;
-    }
+    return false;
   }
 }
 
@@ -451,7 +819,15 @@ export async function probeSourcesUntilPlay(page, state, cfg, log, startTime) {
 
   if (!Array.isArray(state.workingSources)) state.workingSources = [];
 
-  const uiControls = await discoverSourceControls(page, maxAttempts);
+  // Aggregators often hide Server 1/2/3 inside a closed dropdown — open first.
+  await openSourceMenus(page, log);
+  let uiControls = await discoverSourceControls(page, maxAttempts);
+  if (uiControls.length === 0) {
+    await humanizeDelay(400, 800);
+    await openSourceMenus(page, log);
+    uiControls = await discoverSourceControls(page, maxAttempts);
+  }
+
   for (const control of uiControls) {
     if (!state.sourcesFound.some((s) => s.kind === "ui" && s.label === control.label)) {
       state.sourcesFound.push({
@@ -642,6 +1018,7 @@ export function buildProbeResult(state, engine, startTime, cfg) {
       display_name: displayNameForSource(w)
     })),
     target_working: targetWorking,
+    title: state.contentTitle || guessTitleFromUrl(state.finalUrl) || null,
     error_message: errorMessage || null,
     engine
   };

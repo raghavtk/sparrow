@@ -7,6 +7,7 @@ import {
   attachVideoSniffer,
   buildProbeResult,
   buildTargetCandidates,
+  captureContentTitle,
   chooseFingerprint,
   createBaseState,
   humanizeDelay,
@@ -90,6 +91,7 @@ async function probeOnPage(page, _browser, siteUrl, cfg, log, state, startTime) 
     }
     const cookiesAccepted = await tryAcceptCookies(page);
     if (cookiesAccepted) log.debug("Puppeteer accepted a cookie/consent banner");
+    await captureContentTitle(page, state, candidate, log);
     await probeSourcesUntilPlay(page, state, cfg, log, startTime);
     if ((state.workingSources?.length ?? 0) >= (state.targetWorking ?? 1)) break;
   }

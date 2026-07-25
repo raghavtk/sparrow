@@ -6,7 +6,12 @@ import { createBrowserPool } from "./browsers/pool.js";
 import { runWithPlaywright } from "./runners/playwrightRunner.js";
 import { runWithPuppeteer } from "./runners/puppeteerRunner.js";
 import { normalizeUrl, nowIso, safeNum, formatProbeSummary } from "./utils.js";
-import { meetsWorkingTarget } from "./probers/common.js";
+import {
+  meetsWorkingTarget,
+  guessTitleFromUrl,
+  isLikelySiteBrand,
+  scoreMovieTitle
+} from "./probers/common.js";
 
 function isHardDown(probed) {
   const msg = probed?.error_message ?? "";
@@ -135,9 +140,31 @@ async function probeWithRetry(site, options, log, signal) {
     working_source: null,
     working_sources: [],
     target_working: 1,
+    title: null,
     error_message: `Probe failed after retry: ${lastError?.message ?? "unknown error"}`,
     engine: "none"
   };
+}
+
+function resolveMovieTitle(probedTitle, siteUrl, batchTitle) {
+  const candidates = [];
+  if (probedTitle && !isLikelySiteBrand(probedTitle, siteUrl)) {
+    candidates.push({ title: probedTitle, score: scoreMovieTitle(probedTitle, siteUrl, "page") });
+  }
+  if (batchTitle.value) {
+    candidates.push({
+      title: batchTitle.value,
+      score: scoreMovieTitle(batchTitle.value, siteUrl, "url") + 2
+    });
+  }
+  const fromUrl = guessTitleFromUrl(siteUrl);
+  if (fromUrl) {
+    candidates.push({ title: fromUrl, score: scoreMovieTitle(fromUrl, siteUrl, "url") });
+  }
+  candidates.sort((a, b) => b.score - a.score);
+  const best = candidates.find((c) => c.score > 0);
+  if (best?.title) batchTitle.value = best.title;
+  return best?.title ?? null;
 }
 
 function buildOutputRow(site, probed, classification) {
@@ -161,6 +188,7 @@ function buildOutputRow(site, probed, classification) {
     working_source: probed.working_source ?? null,
     working_sources: probed.working_sources ?? [],
     target_working: probed.target_working ?? null,
+    title: probed.title ?? null,
     error_message: probed.error_message || null,
     engine: probed.engine
   };
@@ -182,6 +210,7 @@ function formatSourcesCell(row) {
 
 function reportRowsForConsole(rows) {
   return rows.map((r) => ({
+    name: r.title || "-",
     site: r.site_url,
     status: r.classification,
     up: r.is_up ? "yes" : "no",
@@ -321,6 +350,24 @@ export async function runMonitor({
   const startedAt = Date.now();
   let completed = 0;
 
+  // Same movie across the batch — seed Name from any URL that carries it (e.g. …/936075-michael).
+  const batchTitle = { value: null };
+  for (const site of sites) {
+    const guess = guessTitleFromUrl(site);
+    if (guess && scoreMovieTitle(guess, site, "url") > 0) {
+      if (
+        !batchTitle.value ||
+        scoreMovieTitle(guess, site, "url") >
+          scoreMovieTitle(batchTitle.value, site, "url")
+      ) {
+        batchTitle.value = guess;
+      }
+    }
+  }
+  if (batchTitle.value) {
+    log.info(`Batch movie name: ${batchTitle.value}`);
+  }
+
   try {
     assertNotAborted(signal);
 
@@ -347,7 +394,8 @@ export async function runMonitor({
         maxAdsArtifactsBeforeFlag: DEFAULTS.maxAdsArtifactsBeforeFlag
       });
 
-      const row = buildOutputRow(site, probed, classification);
+      const title = resolveMovieTitle(probed.title, site, batchTitle);
+      const row = buildOutputRow(site, { ...probed, title }, classification);
       writer.write(row);
       rowsByIndex[index] = row;
       completed += 1;
@@ -358,6 +406,9 @@ export async function runMonitor({
       );
       if (row.error_message) {
         log.warn(`  note: ${row.error_message}`);
+      }
+      if (row.title) {
+        log.debug(`  title: ${row.title}`);
       }
       if (row.final_url && row.final_url !== site) {
         log.debug(`  final URL: ${row.final_url}`);

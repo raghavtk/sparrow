@@ -5,6 +5,7 @@ import {
   attachVideoSniffer,
   buildProbeResult,
   buildTargetCandidates,
+  captureContentTitle,
   chooseFingerprint,
   createBaseState,
   humanizeDelay,
@@ -83,6 +84,7 @@ async function probeOnPage(page, siteUrl, cfg, log, state, startTime) {
     }
     const cookiesAccepted = await tryAcceptCookies(page);
     if (cookiesAccepted) log.debug("Playwright accepted a cookie/consent banner");
+    await captureContentTitle(page, state, candidate, log);
     await probeSourcesUntilPlay(page, state, cfg, log, startTime);
     // Enough working sources for this page — skip remaining URL path candidates.
     if ((state.workingSources?.length ?? 0) >= (state.targetWorking ?? 1)) break;

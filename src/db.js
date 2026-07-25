@@ -6,7 +6,8 @@ const SOURCE_COLUMNS = [
   "sources_tried",
   "working_source",
   "working_sources",
-  "target_working"
+  "target_working",
+  "title"
 ];
 
 function ensureSourceColumns(db) {
@@ -57,7 +58,8 @@ export function initDb(dbPath) {
       sources_tried TEXT,
       working_source TEXT,
       working_sources TEXT,
-      target_working INTEGER
+      target_working INTEGER,
+      title TEXT
     );
   `);
 
@@ -89,7 +91,8 @@ export function writeResult(db, result) {
       sources_tried,
       working_source,
       working_sources,
-      target_working
+      target_working,
+      title
     ) VALUES (
       @checked_at,
       @site_url,
@@ -111,7 +114,8 @@ export function writeResult(db, result) {
       @sources_tried,
       @working_source,
       @working_sources,
-      @target_working
+      @target_working,
+      @title
     )
   `);
 
@@ -136,6 +140,7 @@ export function writeResult(db, result) {
     sources_tried: toJson(result.sources_tried),
     working_source: toJson(result.working_source),
     working_sources: toJson(result.working_sources),
-    target_working: result.target_working ?? null
+    target_working: result.target_working ?? null,
+    title: result.title ?? null
   });
 }
