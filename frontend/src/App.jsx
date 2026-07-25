@@ -48,7 +48,8 @@ export default function App() {
 
   function handleRunComplete() {
     setRefreshTick((t) => t + 1);
-    setTimeout(() => setTab("results"), 800);
+    // Don't auto-switch — user stays on Run tab so they can read the output.
+    // The Results tab badge will light up to signal new data.
   }
 
   return (
@@ -144,53 +145,47 @@ export default function App() {
           ))}
         </div>
 
-        {/* Tab content */}
+        {/* Tab content — always mounted, toggled with CSS so state survives tab switches */}
         <div>
-          {tab === "sites" && (
-            <section>
-              <p className="mb-5 text-xs text-[#4a6080] uppercase tracking-widest font-semibold">
-                Tracked Sites
-              </p>
-              <LinkInput sites={sites} onSitesChange={setSites} />
-            </section>
-          )}
+          <section style={{ display: tab === "sites" ? "block" : "none" }}>
+            <p className="mb-5 text-xs text-[#4a6080] uppercase tracking-widest font-semibold">
+              Tracked Sites
+            </p>
+            <LinkInput sites={sites} onSitesChange={setSites} />
+          </section>
 
-          {tab === "run" && (
-            <section>
-              <p className="mb-5 text-xs text-[#4a6080] uppercase tracking-widest font-semibold">
-                Run a check
-              </p>
-              <RunMonitor sites={sites} onRunComplete={handleRunComplete} />
-            </section>
-          )}
+          <section style={{ display: tab === "run" ? "block" : "none" }}>
+            <p className="mb-5 text-xs text-[#4a6080] uppercase tracking-widest font-semibold">
+              Run a check
+            </p>
+            <RunMonitor sites={sites} onRunComplete={handleRunComplete} />
+          </section>
 
-          {tab === "results" && (
-            <section>
-              <div className="flex items-center justify-between mb-5">
-                <p className="text-xs text-[#4a6080] uppercase tracking-widest font-semibold">
-                  Past Results
-                </p>
-                <button
-                  onClick={() => setRefreshTick((t) => t + 1)}
-                  className="text-xs text-[#4a6080] hover:text-teal-400 flex items-center gap-1.5 transition-colors duration-150"
+          <section style={{ display: tab === "results" ? "block" : "none" }}>
+            <div className="flex items-center justify-between mb-5">
+              <p className="text-xs text-[#4a6080] uppercase tracking-widest font-semibold">
+                Past Results
+              </p>
+              <button
+                onClick={() => setRefreshTick((t) => t + 1)}
+                className="text-xs text-[#4a6080] hover:text-teal-400 flex items-center gap-1.5 transition-colors duration-150"
+              >
+                <svg
+                  width="12"
+                  height="12"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2.5"
                 >
-                  <svg
-                    width="12"
-                    height="12"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2.5"
-                  >
-                    <polyline points="23 4 23 10 17 10" />
-                    <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
-                  </svg>
-                  Refresh
-                </button>
-              </div>
-              <ResultsTable refreshTick={refreshTick} />
-            </section>
-          )}
+                  <polyline points="23 4 23 10 17 10" />
+                  <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
+                </svg>
+                Refresh
+              </button>
+            </div>
+            <ResultsTable refreshTick={refreshTick} />
+          </section>
         </div>
       </main>
 

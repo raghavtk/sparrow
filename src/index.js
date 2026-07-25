@@ -11,6 +11,7 @@ async function main() {
     sitesFile: args.sites,
     dbPath: args.db,
     headless: args.headless,
+    concurrency: args.concurrency,
     log
   });
 

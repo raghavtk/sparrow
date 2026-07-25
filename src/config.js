@@ -1,10 +1,19 @@
 export const DEFAULTS = {
-  streamDetectTimeoutMs: 30_000,
-  siteDeadTimeoutMs: 45_000,
-  pageNavigationTimeoutMs: 30_000,
+  /** Wait for a sniffed m3u8/mp4 request after each navigation. */
+  streamDetectTimeoutMs: 18_000,
+  /** Hard ceiling per engine attempt for one site. */
+  siteDeadTimeoutMs: 35_000,
+  pageNavigationTimeoutMs: 20_000,
+  /** Only retries hard thrown errors — "no stream" is not retried. */
   retryAttempts: 1,
+  /** Parallel site probes sharing pooled Chromium processes. */
+  concurrency: 3,
   headless: true,
-  sampleDownloadBytes: 1_000_000,
+  /** Cap bytes read when estimating Mbps (avoid draining huge segments). */
+  sampleDownloadBytes: 256_000,
+  /** Shorter budget for Puppeteer fallback after Playwright already ran. */
+  fallbackSiteDeadTimeoutMs: 22_000,
+  fallbackStreamDetectTimeoutMs: 12_000,
   maxRedirects: 10,
   maxAdsArtifactsBeforeFlag: 7,
   realisticViewports: [

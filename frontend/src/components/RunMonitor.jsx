@@ -29,6 +29,24 @@ function coloriseLine(line) {
   return parts;
 }
 
+function formatEventLine(msg) {
+  if (msg.type === "log") {
+    return msg.text ?? `[${(msg.level ?? "info").toUpperCase()}] ${msg.message ?? ""}`;
+  }
+  // site_start / site_result already appear as log lines from the event logger
+  if (msg.type === "run_start") {
+    return `Run started: ${msg.total} site(s), concurrency=${msg.concurrency}`;
+  }
+  if (msg.type === "run_done") {
+    if (msg.aborted) return "Run aborted.";
+    const c = msg.counts;
+    if (!c) return `Run finished in ${msg.elapsedSec}s`;
+    return `Run finished in ${msg.elapsedSec}s — WORKING=${c.working} SLOW=${c.slow} BROKEN=${c.broken} DOWN=${c.down}`;
+  }
+  if (msg.text) return msg.text;
+  return null;
+}
+
 export default function RunMonitor({ sites, onRunComplete }) {
   const [running, setRunning] = useState(false);
   const [lines, setLines] = useState([]);
@@ -36,11 +54,17 @@ export default function RunMonitor({ sites, onRunComplete }) {
   const logRef = useRef(null);
   const abortRef = useRef(null);
 
+  // Auto-scroll terminal
   useEffect(() => {
     if (logRef.current) {
       logRef.current.scrollTop = logRef.current.scrollHeight;
     }
   }, [lines]);
+
+  // Kill the stream if this component ever truly unmounts (safety net)
+  useEffect(() => {
+    return () => abortRef.current?.abort();
+  }, []);
 
   async function startRun() {
     setRunning(true);
@@ -53,8 +77,19 @@ export default function RunMonitor({ sites, onRunComplete }) {
     try {
       const res = await fetch("/api/run", {
         method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
         signal: ctrl.signal,
       });
+
+      if (res.status === 409) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error ?? "A monitor run is already in progress");
+      }
+
+      if (!res.ok) {
+        throw new Error(`Server returned ${res.status} — is the API running?`);
+      }
 
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
@@ -72,13 +107,15 @@ export default function RunMonitor({ sites, onRunComplete }) {
           try {
             const msg = JSON.parse(line);
             if (msg.type === "done") {
-              setExitCode(msg.code);
+              setExitCode(msg.code ?? (msg.aborted ? 1 : 0));
               setRunning(false);
               onRunComplete?.();
             } else {
-              const text = msg.text ?? "";
-              const newLines = text.split("\n").filter(Boolean);
-              setLines((prev) => [...prev, ...newLines]);
+              const text = formatEventLine(msg);
+              if (text) {
+                const newLines = String(text).split("\n").filter(Boolean);
+                setLines((prev) => [...prev, ...newLines]);
+              }
             }
           } catch {
             /* ignore malformed */
@@ -174,13 +211,16 @@ export default function RunMonitor({ sites, onRunComplete }) {
         )}
       </div>
 
-      {/* Terminal log */}
-      {lines.length > 0 && (
+      {/* Terminal log — show as soon as run starts, even before first output */}
+      {(running || lines.length > 0) && (
         <div
           ref={logRef}
           className="mt-4 rounded-xl border border-[#1e2d4f] bg-[#060a14] p-4 h-64 overflow-y-auto font-mono text-xs leading-relaxed"
           style={{ color: "#7dd3fc" }}
         >
+          {lines.length === 0 && running && (
+            <span className="text-[#2d4060]">Launching browser probe…</span>
+          )}
           {lines.map((line, i) => (
             <div key={i} className="whitespace-pre-wrap break-all">
               {coloriseLine(line)}

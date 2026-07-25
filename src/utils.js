@@ -40,7 +40,8 @@ export function parseArgs(argv) {
     db: "results.db",
     headless: true,
     verbose: false,
-    quiet: false
+    quiet: false,
+    concurrency: undefined
   };
 
   for (let i = 0; i < argv.length; i += 1) {
@@ -49,6 +50,10 @@ export function parseArgs(argv) {
     if (key === "--sites" && value) args.sites = value;
     if (key === "--db" && value) args.db = value;
     if (key === "--headless" && value) args.headless = value !== "false";
+    if (key === "--concurrency" && value) {
+      const n = Number.parseInt(value, 10);
+      if (Number.isFinite(n) && n >= 1) args.concurrency = n;
+    }
     if (key === "--verbose" || key === "-v") args.verbose = true;
     if (key === "--quiet" || key === "-q") args.quiet = true;
   }

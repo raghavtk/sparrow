@@ -51,6 +51,18 @@ export function parsePotentialBotProtection(content = "") {
   );
 }
 
+/** DNS / TCP failures where waiting for a stream cannot help. */
+export function isHardNavigationError(message = "") {
+  return /NAME_NOT_RESOLVED|ERR_NAME_NOT_RESOLVED|CONNECTION_REFUSED|ERR_CONNECTION_REFUSED|ERR_CONNECTION_RESET|ERR_CONNECTION_CLOSED|ERR_ADDRESS_UNREACHABLE|ENOTFOUND|ECONNREFUSED|NS_ERROR_UNKNOWN_HOST/i.test(
+    message
+  );
+}
+
+/** Adblocker / DevTools noise — not site failures. */
+export function isIgnorableRequestFailure(message = "") {
+  return /ERR_BLOCKED_BY_CLIENT|ERR_ABORTED|ERR_FAILED/i.test(message);
+}
+
 export async function tryAcceptCookies(pageApi) {
   const selectors = [
     "button:has-text('Accept')",
@@ -65,9 +77,9 @@ export async function tryAcceptCookies(pageApi) {
     try {
       if (typeof pageApi.locator === "function") {
         const btn = await pageApi.locator(selector).first();
-        if (await btn.isVisible({ timeout: 1000 })) {
-          await btn.click({ timeout: 1500 });
-          await humanizeDelay(150, 400);
+        if (await btn.isVisible({ timeout: 300 })) {
+          await btn.click({ timeout: 800 });
+          await humanizeDelay(80, 200);
           return true;
         }
       } else {
@@ -113,11 +125,24 @@ export function attachVideoSniffer(pageLike, state, engineName) {
 
       let speedMbps = null;
       try {
-        const readStart = Date.now();
-        const bodyBuffer = await res.body();
-        const sampledBytes = Math.min(bodyBuffer.length, DEFAULTS.sampleDownloadBytes);
-        const elapsedSec = Math.max((Date.now() - readStart) / 1000, 0.001);
-        speedMbps = (sampledBytes * 8) / elapsedSec / 1_000_000;
+        const contentLength = Number(
+          headers?.["content-length"] ?? headers?.["Content-Length"] ?? NaN
+        );
+        // Skip draining huge progressive downloads — that alone can dominate runtime.
+        if (Number.isFinite(contentLength) && contentLength > DEFAULTS.sampleDownloadBytes * 4) {
+          speedMbps = null;
+        } else {
+          const readStart = Date.now();
+          const bodyBuffer = await Promise.race([
+            res.body(),
+            sleep(2500).then(() => null)
+          ]);
+          if (bodyBuffer) {
+            const capped = Math.min(bodyBuffer.length, DEFAULTS.sampleDownloadBytes);
+            const elapsedSec = Math.max((Date.now() - readStart) / 1000, 0.001);
+            speedMbps = (capped * 8) / elapsedSec / 1_000_000;
+          }
+        }
       } catch {
         // If body cannot be read (stream chunked/cors), keep metric null.
       }
@@ -139,21 +164,23 @@ export async function waitForStreamSignal(state, timeoutMs) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     if (state.candidateStream) return true;
-    await sleep(500);
+    await sleep(150);
   }
-  return false;
+  return Boolean(state.candidateStream);
 }
 
-export async function detectPlayerAndPlayback(page) {
+export async function detectPlayerAndPlayback(page, observeMs = 2000) {
   const playerFound = await page.evaluate(() => {
     const hasVideo = !!document.querySelector("video");
-    const hasIframePlayer = !!document.querySelector("iframe[src*='embed'], iframe[src*='player']");
+    const hasIframePlayer = !!document.querySelector(
+      "iframe[src*='embed'], iframe[src*='player']"
+    );
     return hasVideo || hasIframePlayer;
   });
 
   let streamStarted = false;
   if (playerFound) {
-    streamStarted = await page.evaluate(async () => {
+    streamStarted = await page.evaluate(async (maxMs) => {
       const video = document.querySelector("video");
       if (!video) return false;
       try {
@@ -164,9 +191,13 @@ export async function detectPlayerAndPlayback(page) {
         // ignore play error
       }
       const startTime = video.currentTime;
-      await new Promise((r) => setTimeout(r, 3500));
+      const deadline = Date.now() + maxMs;
+      while (Date.now() < deadline) {
+        if (video.currentTime > startTime + 0.2) return true;
+        await new Promise((r) => setTimeout(r, 200));
+      }
       return video.currentTime > startTime + 0.2;
-    });
+    }, observeMs);
   }
 
   return { playerFound, streamStarted };

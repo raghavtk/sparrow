@@ -1,9 +1,11 @@
 import express from "express";
 import { readFileSync, writeFileSync, existsSync } from "fs";
-import { spawn } from "child_process";
 import Database from "better-sqlite3";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
+import { runMonitor } from "./src/monitor.js";
+import { createEventLogger } from "./src/logger.js";
+import { DEFAULTS } from "./src/config.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -14,6 +16,9 @@ app.use(express.static(join(__dirname, "frontend/dist")));
 
 const SITES_FILE = join(__dirname, "sites.txt");
 const DB_FILE = join(__dirname, "results.db");
+
+/** Reject overlapping monitor runs. */
+let activeAbort = null;
 
 // GET /api/sites — read and parse sites.txt
 app.get("/api/sites", (_req, res) => {
@@ -39,30 +44,74 @@ app.post("/api/sites", (req, res) => {
   res.json({ ok: true });
 });
 
-// POST /api/run — spawn CLI, stream output as Server-Sent Events
-app.post("/api/run", (_req, res) => {
+// POST /api/run — in-process monitor, stream structured events as SSE
+app.post("/api/run", async (req, res) => {
+  if (activeAbort) {
+    return res.status(409).json({ error: "A monitor run is already in progress" });
+  }
+
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
   res.flushHeaders();
 
-  const child = spawn(
-    "node",
-    ["src/index.js", "--sites", "sites.txt", "--db", "results.db"],
-    { cwd: __dirname }
-  );
+  const abortController = new AbortController();
+  activeAbort = abortController;
 
-  const send = (type, text) =>
-    res.write(`data: ${JSON.stringify({ type, text })}\n\n`);
+  const send = (event) => {
+    if (!res.writableEnded) {
+      res.write(`data: ${JSON.stringify(event)}\n\n`);
+    }
+  };
 
-  child.stdout.on("data", (d) => send("stdout", d.toString()));
-  child.stderr.on("data", (d) => send("stderr", d.toString()));
-  child.on("close", (code) => {
-    res.write(`data: ${JSON.stringify({ type: "done", code })}\n\n`);
-    res.end();
-  });
+  // Abort only on real client disconnect. Do NOT use req.on("close"):
+  // for POST+JSON the request stream closes as soon as the body is read,
+  // which was aborting every run immediately (~1s, no DB rows).
+  const onClientClose = () => {
+    if (!res.writableFinished) {
+      abortController.abort();
+    }
+  };
+  res.on("close", onClientClose);
 
-  req.on("close", () => child.kill());
+  const body = req.body && typeof req.body === "object" ? req.body : {};
+  const concurrency =
+    Number.isFinite(body.concurrency) && body.concurrency >= 1
+      ? Math.floor(body.concurrency)
+      : DEFAULTS.concurrency;
+  const headless = body.headless !== false;
+
+  const log = createEventLogger(send);
+
+  try {
+    await runMonitor({
+      sitesFile: SITES_FILE,
+      dbPath: DB_FILE,
+      headless,
+      concurrency,
+      log,
+      onEvent: send,
+      signal: abortController.signal
+    });
+    // Backward-compat for UI that still keys off type:"done"
+    send({ type: "done", code: 0 });
+  } catch (err) {
+    const aborted = err?.name === "AbortError" || abortController.signal.aborted;
+    if (!aborted) {
+      send({
+        type: "log",
+        level: "error",
+        message: err.message,
+        text: `[ERR ] ${err.message}`
+      });
+    }
+    send({ type: "done", code: 1, aborted });
+  } finally {
+    res.off("close", onClientClose);
+    activeAbort = null;
+    if (!res.writableEnded) res.end();
+  }
 });
 
 // GET /api/results — latest 200 rows from SQLite
@@ -82,13 +131,28 @@ app.get("/api/results", (_req, res) => {
   }
 });
 
-// SPA fallback
-app.get("*", (_req, res) => {
+// SPA fallback — Express 5 requires a named wildcard parameter
+app.get("/{*path}", (_req, res) => {
   const dist = join(__dirname, "frontend/dist/index.html");
   if (existsSync(dist)) res.sendFile(dist);
   else res.status(404).send("Run `cd frontend && npm run build` first.");
 });
 
-app.listen(PORT, () =>
-  console.log(`\n  Sparrow API  →  http://localhost:${PORT}\n`)
-);
+const server = app.listen(PORT, () => {
+  console.log(`\n  Sparrow API  →  http://localhost:${PORT}`);
+  console.log(
+    `  probe build   →  v2-pool-failfast  concurrency=${DEFAULTS.concurrency}\n`
+  );
+});
+
+server.on("error", (err) => {
+  if (err.code === "EADDRINUSE") {
+    console.error(
+      `\n  Port ${PORT} already in use — an old Sparrow API is probably still running.`
+    );
+    console.error(`  Kill it with:  fuser -k ${PORT}/tcp\n`);
+  } else {
+    console.error(`Failed to start API:`, err);
+  }
+  process.exit(1);
+});
