@@ -36,7 +36,7 @@ function Chip({ label, color, bg, title }) {
 }
 
 function fmt(val, unit = "") {
-  if (val == null || val === "") return <span className="text-[#2d4060]">—</span>;
+  if (val == null || val === "") return <span className="text-[#2d4060]">-</span>;
   if (typeof val === "number") {
     return `${val.toFixed(unit === "ms" ? 0 : 1)}${unit}`;
   }
@@ -142,7 +142,7 @@ function adsSignal(row) {
   }
   return {
     short: `Noisy · ${n}`,
-    detail: `${n} popup/ad windows — page is ad-heavy`,
+    detail: `${n} popup/ad windows: page is ad-heavy`,
     color: "#ec4899",
     bg: "#2a081e",
   };
@@ -189,7 +189,7 @@ function truncateUrl(url, max = 56) {
 
 function WorkingCell({ row }) {
   const summary = workingSummary(row);
-  if (!summary) return <span className="text-[#2d4060]">—</span>;
+  if (!summary) return <span className="text-[#2d4060]">-</span>;
   if (typeof summary === "string") {
     return <span className="text-slate-500 text-xs">{summary}</span>;
   }
@@ -445,7 +445,7 @@ function SourceBreakdown({ row }) {
                         {attempt.stream_url ? (
                           <span title={attempt.stream_url}>{truncateUrl(attempt.stream_url)}</span>
                         ) : (
-                          <span className="text-[#2d4060]">—</span>
+                          <span className="text-[#2d4060]">-</span>
                         )}
                       </td>
                     </tr>
@@ -504,7 +504,7 @@ function ResultRow({ row }) {
             className="text-slate-200 text-xs font-semibold truncate"
             title={movieName || undefined}
           >
-            {movieName || <span className="text-[#2d4060] font-normal">—</span>}
+            {movieName || <span className="text-[#2d4060] font-normal">-</span>}
           </div>
         </td>
         <td className="px-3 py-3 max-w-[10rem]">
@@ -613,7 +613,7 @@ export default function ResultsTable({ refreshTick }) {
           <line x1="3" y1="9" x2="21" y2="9" />
           <line x1="9" y1="21" x2="9" y2="9" />
         </svg>
-        <p className="text-sm">No results yet — run a monitor check first</p>
+        <p className="text-sm">No results yet. Run a monitor check first.</p>
       </div>
     );
   }

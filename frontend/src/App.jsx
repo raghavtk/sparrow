@@ -120,7 +120,7 @@ export default function App() {
             </span>
           </h1>
           <p className="mt-2 text-sm text-[#4a6080] leading-relaxed">
-            Add streaming sites, run a health probe, and track results — all
+            Add streaming sites, run a health probe, and track results, all
             without leaving this dashboard.
           </p>
         </div>
@@ -196,7 +196,7 @@ export default function App() {
       {/* Footer */}
       <footer className="border-t border-[#0f1628] py-4">
         <p className="text-center text-xs text-[#1e2d4f]">
-          Sparrow — sails into rough waters
+          Sparrow: sails into rough waters
         </p>
       </footer>
     </div>

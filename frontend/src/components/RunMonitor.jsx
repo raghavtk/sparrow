@@ -41,7 +41,7 @@ function formatEventLine(msg) {
     if (msg.aborted) return "Run aborted.";
     const c = msg.counts;
     if (!c) return `Run finished in ${msg.elapsedSec}s`;
-    return `Run finished in ${msg.elapsedSec}s — WORKING=${c.working} SLOW=${c.slow} BROKEN=${c.broken} DOWN=${c.down}`;
+    return `Run finished in ${msg.elapsedSec}s: WORKING=${c.working} SLOW=${c.slow} BROKEN=${c.broken} DOWN=${c.down}`;
   }
   if (msg.text) return msg.text;
   return null;
@@ -88,7 +88,7 @@ export default function RunMonitor({ sites, onRunComplete }) {
       }
 
       if (!res.ok) {
-        throw new Error(`Server returned ${res.status} — is the API running?`);
+        throw new Error(`Server returned ${res.status}: is the API running?`);
       }
 
       const reader = res.body.getReader();

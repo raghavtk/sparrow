@@ -196,7 +196,7 @@ export default function LinkInput({ sites, onSitesChange }) {
 
       {sites.length === 0 && (
         <p className="mt-6 text-center text-sm text-[#2d4060]">
-          No sites yet — add one above to start monitoring
+          No sites yet. Add one above to start monitoring.
         </p>
       )}
     </div>

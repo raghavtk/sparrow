@@ -1,6 +1,7 @@
 node_modules/
 results.db
 results.db-*
+sites.txt
 *.log
 .env
 .DS_Store
