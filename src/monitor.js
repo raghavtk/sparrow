@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import { DEFAULTS, RESULT_STATUS } from "./config.js";
+import { assertPublicUrl } from "./security.js";
 import { initDb, writeResult } from "./db.js";
 import { classifyResult } from "./classifier.js";
 import { createBrowserPool } from "./browsers/pool.js";
@@ -10,13 +11,15 @@ import {
   meetsWorkingTarget,
   guessTitleFromUrl,
   isLikelySiteBrand,
-  scoreMovieTitle
 } from "./probers/common.js";
 
 function isHardDown(probed) {
   const msg = probed?.error_message ?? "";
-  return /CONNECTION_REFUSED|NAME_NOT_RESOLVED|ERR_CONNECTION|ENOTFOUND|ECONNREFUSED/i.test(
-    msg
+  return (
+    !probed?.is_up &&
+    /CONNECTION_REFUSED|NAME_NOT_RESOLVED|ERR_CONNECTION|ENOTFOUND|ECONNREFUSED/i.test(
+      msg,
+    )
   );
 }
 
@@ -77,7 +80,7 @@ async function probeOnce(site, options, log, signal) {
 
   if (primary.working_sources?.length) {
     log.step(
-      `Playwright found ${primary.working_sources.length}/${primary.target_working ?? "?"} working; trying Puppeteer for more`
+      `Playwright found ${primary.working_sources.length}/${primary.target_working ?? "?"} working; trying Puppeteer for more`,
     );
   } else {
     log.step(`Playwright found no stream; launching Puppeteer fallback`);
@@ -85,9 +88,8 @@ async function probeOnce(site, options, log, signal) {
   const fallback = await runWithPuppeteer(site, {
     ...options,
     log,
-    siteDeadTimeoutMs: options.fallbackSiteDeadTimeoutMs ?? DEFAULTS.fallbackSiteDeadTimeoutMs,
-    streamDetectTimeoutMs:
-      options.fallbackStreamDetectTimeoutMs ?? DEFAULTS.fallbackStreamDetectTimeoutMs
+    siteDeadTimeoutMs:
+      options.fallbackSiteDeadTimeoutMs ?? DEFAULTS.fallbackSiteDeadTimeoutMs,
   });
   assertNotAborted(signal);
   log.debug(`Puppeteer finished: ${formatProbeSummary(fallback)}`);
@@ -114,6 +116,7 @@ async function probeWithRetry(site, options, log, signal) {
       // "No stream" is a valid result — do not burn another full engine cycle.
       return await probeOnce(site, options, log, signal);
     } catch (err) {
+      if (signal?.aborted) throw abortError();
       if (err?.name === "AbortError") throw err;
       lastError = err;
       log.warn(`Attempt ${attemptNum} failed: ${err.message}`);
@@ -142,29 +145,14 @@ async function probeWithRetry(site, options, log, signal) {
     target_working: 1,
     title: null,
     error_message: `Probe failed after retry: ${lastError?.message ?? "unknown error"}`,
-    engine: "none"
+    engine: "none",
   };
 }
 
-function resolveMovieTitle(probedTitle, siteUrl, batchTitle) {
-  const candidates = [];
-  if (probedTitle && !isLikelySiteBrand(probedTitle, siteUrl)) {
-    candidates.push({ title: probedTitle, score: scoreMovieTitle(probedTitle, siteUrl, "page") });
-  }
-  if (batchTitle.value) {
-    candidates.push({
-      title: batchTitle.value,
-      score: scoreMovieTitle(batchTitle.value, siteUrl, "url") + 2
-    });
-  }
-  const fromUrl = guessTitleFromUrl(siteUrl);
-  if (fromUrl) {
-    candidates.push({ title: fromUrl, score: scoreMovieTitle(fromUrl, siteUrl, "url") });
-  }
-  candidates.sort((a, b) => b.score - a.score);
-  const best = candidates.find((c) => c.score > 0);
-  if (best?.title) batchTitle.value = best.title;
-  return best?.title ?? null;
+function resolveMovieTitle(probedTitle, siteUrl) {
+  return probedTitle && !isLikelySiteBrand(probedTitle, siteUrl)
+    ? probedTitle
+    : guessTitleFromUrl(siteUrl);
 }
 
 function buildOutputRow(site, probed, classification) {
@@ -175,6 +163,7 @@ function buildOutputRow(site, probed, classification) {
     classification,
     is_up: probed.is_up,
     http_status: safeNum(probed.http_status),
+    page_http_status: safeNum(probed.page_http_status),
     ttfb_ms: safeNum(probed.ttfb_ms),
     speed_mbps: safeNum(probed.speed_mbps),
     stream_started: probed.stream_started,
@@ -190,12 +179,14 @@ function buildOutputRow(site, probed, classification) {
     target_working: probed.target_working ?? null,
     title: probed.title ?? null,
     error_message: probed.error_message || null,
-    engine: probed.engine
+    engine: probed.engine,
   };
 }
 
 function formatSourcesCell(row) {
-  const workingList = Array.isArray(row.working_sources) ? row.working_sources : [];
+  const workingList = Array.isArray(row.working_sources)
+    ? row.working_sources
+    : [];
   const names = workingList
     .map((w) => w.display_name || w.label)
     .filter(Boolean);
@@ -221,7 +212,7 @@ function reportRowsForConsole(rows) {
     speed_mbps: r.speed_mbps ? r.speed_mbps.toFixed(2) : "-",
     ads: r.ads_artifacts,
     redirects: r.redirects,
-    engine: r.engine
+    engine: r.engine,
   }));
 }
 
@@ -233,8 +224,10 @@ function tallyCounts(rows) {
       if (row.classification === RESULT_STATUS.SLOW) acc.slow += 1;
       if (row.classification === RESULT_STATUS.BROKEN) acc.broken += 1;
       if (row.classification === RESULT_STATUS.DOWN) acc.down += 1;
-      if (row.classification === RESULT_STATUS.REDIRECT_LOOP) acc.redirectLoop += 1;
-      if (row.classification === RESULT_STATUS.TOO_MANY_ADS) acc.tooManyAds += 1;
+      if (row.classification === RESULT_STATUS.REDIRECT_LOOP)
+        acc.redirectLoop += 1;
+      if (row.classification === RESULT_STATUS.TOO_MANY_ADS)
+        acc.tooManyAds += 1;
       return acc;
     },
     {
@@ -244,8 +237,8 @@ function tallyCounts(rows) {
       broken: 0,
       down: 0,
       redirectLoop: 0,
-      tooManyAds: 0
-    }
+      tooManyAds: 0,
+    },
   );
 }
 
@@ -254,7 +247,7 @@ function createSerializedWriter(db) {
   return {
     write(row) {
       writeResult(db, row);
-    }
+    },
   };
 }
 
@@ -286,13 +279,16 @@ async function mapPool(items, concurrency, signal, fn) {
 
   const poolSize = Math.max(1, Math.min(concurrency, items.length));
   const settled = await Promise.allSettled(
-    Array.from({ length: poolSize }, () => worker())
+    Array.from({ length: poolSize }, () => worker()),
   );
 
   if (hardError) throw hardError;
 
   for (const outcome of settled) {
-    if (outcome.status === "rejected" && outcome.reason?.name !== "AbortError") {
+    if (
+      outcome.status === "rejected" &&
+      outcome.reason?.name !== "AbortError"
+    ) {
       throw outcome.reason;
     }
   }
@@ -302,28 +298,31 @@ async function mapPool(items, concurrency, signal, fn) {
 
 export async function runMonitor({
   sitesFile,
+  sites: inputSites,
+  validateUrl = assertPublicUrl,
   dbPath,
   headless,
   log,
   onEvent,
   signal,
-  concurrency
+  concurrency,
 } = {}) {
   const options = {
     ...DEFAULTS,
-    headless
+    headless: headless ?? DEFAULTS.headless,
   };
 
   const siteConcurrency = Math.max(
     1,
-    Number.isFinite(concurrency) ? concurrency : DEFAULTS.concurrency
+    Number.isFinite(concurrency) ? concurrency : DEFAULTS.concurrency,
   );
 
   log.info(`Reading sites from ${sitesFile}`);
-  const sites = await readSitesFile(sitesFile);
+  const sites = inputSites ?? (await readSitesFile(sitesFile));
   if (sites.length === 0) {
     throw new Error(`No sites found in ${sitesFile}`);
   }
+  await Promise.all(sites.map(validateUrl));
 
   log.info(`Loaded ${sites.length} site(s):`);
   sites.forEach((site, index) => {
@@ -339,34 +338,20 @@ export async function runMonitor({
     sites,
     dbPath,
     headless,
-    concurrency: siteConcurrency
+    concurrency: siteConcurrency,
   });
 
   const db = initDb(dbPath);
   const writer = createSerializedWriter(db);
-  const browserPool = createBrowserPool({ headless });
+  const browserPool = createBrowserPool({ headless, signal, validateUrl });
   const probeOptions = { ...options, browserPool };
+  const cancelBrowsers = () => {
+    browserPool.close().catch(() => null);
+  };
+  signal?.addEventListener("abort", cancelBrowsers, { once: true });
   const rowsByIndex = new Array(sites.length);
   const startedAt = Date.now();
   let completed = 0;
-
-  // Same movie across the batch — seed Name from any URL that carries it (e.g. …/936075-michael).
-  const batchTitle = { value: null };
-  for (const site of sites) {
-    const guess = guessTitleFromUrl(site);
-    if (guess && scoreMovieTitle(guess, site, "url") > 0) {
-      if (
-        !batchTitle.value ||
-        scoreMovieTitle(guess, site, "url") >
-          scoreMovieTitle(batchTitle.value, site, "url")
-      ) {
-        batchTitle.value = guess;
-      }
-    }
-  }
-  if (batchTitle.value) {
-    log.info(`Batch movie name: ${batchTitle.value}`);
-  }
 
   try {
     assertNotAborted(signal);
@@ -381,7 +366,7 @@ export async function runMonitor({
         site,
         index,
         total: sites.length,
-        completed
+        completed,
       });
 
       const siteStartedAt = Date.now();
@@ -391,18 +376,19 @@ export async function runMonitor({
       const classification = classifyResult({
         ...probed,
         maxRedirects: DEFAULTS.maxRedirects,
-        maxAdsArtifactsBeforeFlag: DEFAULTS.maxAdsArtifactsBeforeFlag
       });
 
-      const title = resolveMovieTitle(probed.title, site, batchTitle);
+      const title = resolveMovieTitle(probed.title, site);
       const row = buildOutputRow(site, { ...probed, title }, classification);
       writer.write(row);
       rowsByIndex[index] = row;
       completed += 1;
 
-      const elapsedSec = Number(((Date.now() - siteStartedAt) / 1000).toFixed(1));
+      const elapsedSec = Number(
+        ((Date.now() - siteStartedAt) / 1000).toFixed(1),
+      );
       log.success(
-        `[${completed}/${sites.length}] ${classification} in ${elapsedSec}s (${formatProbeSummary(probed)})`
+        `[${completed}/${sites.length}] ${classification} in ${elapsedSec}s (${formatProbeSummary(probed)})`,
       );
       if (row.error_message) {
         log.warn(`  note: ${row.error_message}`);
@@ -418,11 +404,11 @@ export async function runMonitor({
       }
       if (Array.isArray(row.working_sources) && row.working_sources.length) {
         log.debug(
-          `  working: ${row.working_sources.map((w) => w.display_name || w.label).join(", ")}`
+          `  working: ${row.working_sources.map((w) => w.display_name || w.label).join(", ")}`,
         );
       } else if (Array.isArray(row.sources_tried) && row.sources_tried.length) {
         log.debug(
-          `  sources: ${row.sources_found?.length ?? 0} found, ${row.sources_tried.length} tried, none played`
+          `  sources: ${row.sources_found?.length ?? 0} found, ${row.sources_tried.length} tried, none played`,
         );
       }
 
@@ -433,7 +419,7 @@ export async function runMonitor({
         total: sites.length,
         completed,
         elapsedSec,
-        row
+        row,
       });
 
       return row;
@@ -442,6 +428,7 @@ export async function runMonitor({
     if (signal?.aborted) throw abortError();
   } catch (err) {
     await browserPool.close().catch(() => null);
+    signal?.removeEventListener("abort", cancelBrowsers);
     db.close();
     const partial = rowsByIndex.filter(Boolean);
     const aborted = err?.name === "AbortError";
@@ -451,12 +438,13 @@ export async function runMonitor({
       code: 1,
       counts: tallyCounts(partial),
       elapsedSec: Number(((Date.now() - startedAt) / 1000).toFixed(1)),
-      error: aborted ? undefined : err.message
+      error: aborted ? undefined : err.message,
     });
     throw err;
   }
 
   await browserPool.close().catch(() => null);
+  signal?.removeEventListener("abort", cancelBrowsers);
   db.close();
 
   const rows = rowsByIndex;
@@ -469,12 +457,12 @@ export async function runMonitor({
     aborted: false,
     code: 0,
     counts,
-    elapsedSec: totalElapsedSec
+    elapsedSec: totalElapsedSec,
   });
 
   return {
     rows,
     table: reportRowsForConsole(rows),
-    counts
+    counts,
   };
 }

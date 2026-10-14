@@ -1,0 +1,17 @@
+services:
+  sparrow:
+    build: .
+    init: true
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3001:3001"
+    environment:
+      SPARROW_ACCESS_TOKEN: ${SPARROW_ACCESS_TOKEN:?Set a private access key}
+    volumes:
+      - sparrow-data:/data
+    shm_size: 512mb
+    mem_limit: 2g
+    cpus: 2.0
+    pids_limit: 256
+volumes:
+  sparrow-data:

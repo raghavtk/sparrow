@@ -1,17 +1,21 @@
 {
   "name": "sparrow",
   "version": "1.0.0",
-  "description": "Sparrow — Node.js health monitor for authorized video streaming websites",
+  "description": "Sparrow â€” Node.js health monitor for authorized video streaming websites",
   "type": "module",
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js --sites sites.txt --db results.db",
     "check": "node src/index.js --sites sites.txt --db results.db --headless true",
     "server": "node server.js",
-    "dev": "concurrently -n API,UI -c cyan,magenta \"node server.js\" \"cd frontend && npm run dev\""
+    "dev": "concurrently -n API,UI -c cyan,magenta \"node server.js\" \"cd frontend && npm run dev\"",
+    "test": "node --test --test-concurrency=1 tests/functionality.test.mjs",
+    "build": "npm --prefix frontend run build",
+    "format": "prettier --write server.js src frontend/src tests/*.mjs tests/assets/README.md README.md compose.yaml package.json",
+    "pretest": "npm run build"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22.14.0 <23"
   },
   "dependencies": {
     "better-sqlite3": "^11.8.1",
@@ -23,5 +27,8 @@
     "puppeteer-extra": "^3.3.6",
     "puppeteer-extra-plugin-adblocker": "^2.13.6",
     "puppeteer-extra-plugin-stealth": "^2.11.2"
+  },
+  "devDependencies": {
+    "prettier": "3.5.3"
   }
 }

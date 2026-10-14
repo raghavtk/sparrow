@@ -1,204 +1,246 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
+import useSparrow from "./hooks/useSparrow";
+import Icon from "./components/Icon";
 import LinkInput from "./components/LinkInput";
 import RunMonitor from "./components/RunMonitor";
 import ResultsTable from "./components/ResultsTable";
 
-const TABS = [
-  { id: "sites", label: "Sites" },
-  { id: "run", label: "Run" },
-  { id: "results", label: "Results" },
+const NAVIGATION = [
+  { id: "overview", label: "Overview", icon: "grid" },
+  { id: "saved", label: "Saved pages", icon: "link" },
+  { id: "activity", label: "Activity", icon: "activity" },
 ];
 
-function SparrowLogo() {
-  return (
-    <svg
-      width="28"
-      height="28"
-      viewBox="0 0 32 32"
-      fill="none"
-      aria-hidden="true"
-    >
-      <path
-        d="M16 3C9 3 4 9 4 16s5 13 12 13 12-6 12-13S23 3 16 3z"
-        fill="#0f1628"
-        stroke="#2dd4bf"
-        strokeWidth="1.5"
-      />
-      <path
-        d="M16 8c-2 0-5 2-6 5 1-1 3-1 4 0-2 0-4 2-4 4 1-1 2-1 3-1-1 1-2 3-1 5 1-2 3-3 4-3s3 1 4 3c1-2 0-4-1-5 1 0 2 0 3 1 0-2-2-4-4-4 1-1 3-1 4 0-1-3-4-5-6-5z"
-        fill="#2dd4bf"
-        opacity="0.85"
-      />
-      <circle cx="13" cy="13" r="1" fill="#fbbf24" />
-    </svg>
-  );
-}
-
 export default function App() {
-  const [tab, setTab] = useState("sites");
-  const [sites, setSites] = useState([]);
-  const [refreshTick, setRefreshTick] = useState(0);
-
-  useEffect(() => {
-    fetch("/api/sites")
-      .then((r) => r.json())
-      .then((d) => setSites(d.sites ?? []))
-      .catch(() => {});
-  }, []);
-
-  function handleRunComplete() {
-    setRefreshTick((t) => t + 1);
-    // Don't auto-switch — user stays on Run tab so they can read the output.
-    // The Results tab badge will light up to signal new data.
-  }
+  const [view, setView] = useState("overview");
+  const sparrow = useSparrow({ includeHistory: view === "activity" });
+  const [key, setKey] = useState("");
+  const start = (sites) => sparrow.start(sites).catch(() => {});
+  const latest = new Map(sparrow.results.map((r) => [r.site_url, r]));
+  const rows = sparrow.sites.map(
+    (url) => latest.get(url) ?? { site_url: url, classification: "UNCHECKED" },
+  );
+  const played = rows.filter((r) => r.stream_started).length;
+  const untested = rows.filter((r) => r.classification === "UNCHECKED").length;
+  const needsAttention = rows.length - played - untested;
 
   return (
-    <div className="min-h-screen flex flex-col" style={{ background: "#060a14" }}>
-      {/* Ambient glow */}
-      <div
-        className="pointer-events-none fixed inset-0 overflow-hidden"
-        aria-hidden
-      >
-        <div
-          className="absolute top-[-20%] left-[10%] w-[600px] h-[600px] rounded-full opacity-[0.04]"
-          style={{
-            background: "radial-gradient(circle, #2dd4bf 0%, transparent 70%)",
-          }}
-        />
-        <div
-          className="absolute top-[20%] right-[5%] w-[400px] h-[400px] rounded-full opacity-[0.03]"
-          style={{
-            background: "radial-gradient(circle, #6366f1 0%, transparent 70%)",
-          }}
-        />
-      </div>
-
-      {/* Header */}
-      <header
-        className="sticky top-0 z-10 border-b border-[#0f1628]"
-        style={{ background: "rgba(6,10,20,0.9)", backdropFilter: "blur(12px)" }}
-      >
-        <div className="max-w-5xl mx-auto px-6 h-14 flex items-center gap-3">
-          <SparrowLogo />
-          <span className="font-bold text-slate-100 tracking-tight">
-            Sparrow
+    <div className="app-shell">
+      <aside className="sidebar">
+        <a className="brand" href="/" aria-label="Sparrow home">
+          <span className="brand-mark">
+            <Icon name="bird" size={26} />
           </span>
-          <span className="hidden sm:block text-xs text-[#2d4060] ml-1">
-            Stream health monitor
+          <span>
+            Sparrow<span className="brand-caption">STREAM OBSERVATORY</span>
           </span>
-
-          {/* Spacer */}
-          <div className="flex-1" />
-
-          {/* Site count pill */}
-          <span
-            className="text-xs px-2.5 py-1 rounded-full font-medium"
-            style={{ background: "#0f1628", color: sites.length ? "#2dd4bf" : "#2d4060" }}
-          >
-            {sites.length} {sites.length === 1 ? "site" : "sites"}
-          </span>
-        </div>
-      </header>
-
-      {/* Main */}
-      <main
-        className={`flex-1 mx-auto w-full px-6 py-10 ${
-          tab === "results" ? "max-w-5xl" : "max-w-3xl"
-        }`}
-      >
-        {/* Hero */}
-        <div className="mb-10">
-          <h1 className="text-3xl font-bold text-slate-100 leading-tight">
-            Monitor your{" "}
-            <span
-              className="bg-clip-text text-transparent"
-              style={{
-                backgroundImage: "linear-gradient(90deg, #2dd4bf, #6366f1)",
-              }}
-            >
-              streams
-            </span>
-          </h1>
-          <p className="mt-2 text-sm text-[#4a6080] leading-relaxed">
-            Add streaming sites, run a health probe, and track results, all
-            without leaving this dashboard.
-          </p>
-        </div>
-
-        {/* Tab bar */}
-        <div
-          className="flex gap-1 p-1 rounded-xl mb-8 w-fit"
-          style={{ background: "#0a0e1a" }}
-        >
-          {TABS.map(({ id, label }) => (
+        </a>
+        <div className="workspace-label">YOUR WORKSPACE</div>
+        <nav aria-label="Main navigation">
+          {NAVIGATION.map((item) => (
             <button
-              key={id}
-              onClick={() => setTab(id)}
-              className="relative px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200"
-              style={
-                tab === id
-                  ? { color: "#e2e8f0", background: "#161f38" }
-                  : { color: "#4a6080" }
-              }
+              key={item.id}
+              className={`nav-item ${view === item.id ? "selected" : ""}`}
+              aria-current={view === item.id ? "page" : undefined}
+              onClick={() => setView(item.id)}
             >
-              {label}
-              {id === "results" && refreshTick > 0 && tab !== "results" && (
-                <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-teal-400" />
+              <Icon name={item.icon} />
+              {item.label}
+              {item.id === "saved" && (
+                <span className="nav-count">{sparrow.sites.length}</span>
+              )}
+              {item.id === "activity" && sparrow.running && (
+                <span className="live-dot" />
               )}
             </button>
           ))}
+        </nav>
+        <div className="sidebar-note">
+          <span className="tiny-label">A LITTLE MORE CERTAINTY</span>
+          <p>Know which source played before you press play.</p>
+          <span className="muted">
+            Observed, timestamped, and ready to recheck.
+          </span>
         </div>
-
-        {/* Tab content — always mounted, toggled with CSS so state survives tab switches */}
-        <div>
-          <section style={{ display: tab === "sites" ? "block" : "none" }}>
-            <p className="mb-5 text-xs text-[#4a6080] uppercase tracking-widest font-semibold">
-              Tracked Sites
-            </p>
-            <LinkInput sites={sites} onSitesChange={setSites} />
-          </section>
-
-          <section style={{ display: tab === "run" ? "block" : "none" }}>
-            <p className="mb-5 text-xs text-[#4a6080] uppercase tracking-widest font-semibold">
-              Run a check
-            </p>
-            <RunMonitor sites={sites} onRunComplete={handleRunComplete} />
-          </section>
-
-          <section style={{ display: tab === "results" ? "block" : "none" }}>
-            <div className="flex items-center justify-between mb-5">
-              <p className="text-xs text-[#4a6080] uppercase tracking-widest font-semibold">
-                Past Results
+        <div className="workspace-status">
+          <span className="live-dot" />
+          {sparrow.session?.privateAccess
+            ? "Private workspace"
+            : "Local workspace"}
+        </div>
+      </aside>
+      <div className="workspace">
+        <header className="topbar">
+          <span className="breadcrumb">
+            Workspace <Icon name="chevron" size={13} />
+            <strong>{NAVIGATION.find((item) => item.id === view).label}</strong>
+          </span>
+          <span className="topbar-note">
+            <Icon name="clock" size={14} />
+            Playback evidence, not promises
+          </span>
+        </header>
+        <main>
+          <div className="page-heading">
+            <div>
+              <span className="eyebrow">WATCH WITH CONFIDENCE</span>
+              <h1>
+                {view === "overview"
+                  ? "Find your next working stream."
+                  : view === "saved"
+                    ? "Your watch-page collection."
+                    : "A clear view of every check."}
+              </h1>
+              <p>
+                {view === "overview"
+                  ? "Recent playback checks, the source to choose, and the details that matter."
+                  : view === "saved"
+                    ? "Save exact movie, episode, or event pages. Each page keeps its own history."
+                    : "Follow progress live. You can leave this page and reconnect at any time."}
               </p>
+            </div>
+            {sparrow.session?.authenticated && (
               <button
-                onClick={() => setRefreshTick((t) => t + 1)}
-                className="text-xs text-[#4a6080] hover:text-teal-400 flex items-center gap-1.5 transition-colors duration-150"
+                className="button primary"
+                disabled={
+                  !sparrow.sites.length || sparrow.running || sparrow.busy
+                }
+                onClick={() => start()}
               >
-                <svg
-                  width="12"
-                  height="12"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2.5"
-                >
-                  <polyline points="23 4 23 10 17 10" />
-                  <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
-                </svg>
-                Refresh
+                <Icon name="play" size={16} />
+                {sparrow.running ? "Check in progress" : "Check all pages"}
+              </button>
+            )}
+          </div>
+          {sparrow.error && (
+            <div className="error-banner" role="alert">
+              <Icon name="alert" />
+              {sparrow.error}
+              <button className="button subtle" onClick={sparrow.refresh}>
+                Retry
               </button>
             </div>
-            <ResultsTable refreshTick={refreshTick} />
-          </section>
-        </div>
-      </main>
-
-      {/* Footer */}
-      <footer className="border-t border-[#0f1628] py-4">
-        <p className="text-center text-xs text-[#1e2d4f]">
-          Sparrow: sails into rough waters
-        </p>
-      </footer>
+          )}
+          {!sparrow.session?.authenticated && sparrow.session ? (
+            <form
+              className="login-panel panel"
+              onSubmit={(event) => {
+                event.preventDefault();
+                sparrow
+                  .login(key)
+                  .then(() => setKey(""))
+                  .catch(() => {});
+              }}
+            >
+              <span className="eyebrow">PRIVATE ACCESS</span>
+              <h2>Welcome to your workspace.</h2>
+              <p className="muted">
+                Enter the access key configured for this Sparrow instance.
+              </p>
+              <label htmlFor="access-key">Access key</label>
+              <input
+                id="access-key"
+                type="password"
+                autoComplete="current-password"
+                value={key}
+                onChange={(e) => setKey(e.target.value)}
+                required
+              />
+              <button className="button primary" disabled={sparrow.busy}>
+                Unlock workspace
+              </button>
+            </form>
+          ) : (
+            <>
+              {view === "overview" && (
+                <>
+                  <div className="stats-grid">
+                    <div className="stat">
+                      <span className="stat-icon mint">
+                        <Icon name="check" />
+                      </span>
+                      <div>
+                        <span className="stat-label">Playback observed</span>
+                        <strong>{played.toString().padStart(2, "0")}</strong>
+                        <span className="stat-description">
+                          Pages that played in their latest check
+                        </span>
+                      </div>
+                    </div>
+                    <div className="stat">
+                      <span className="stat-icon amber">
+                        <Icon name="alert" />
+                      </span>
+                      <div>
+                        <span className="stat-label">Needs attention</span>
+                        <strong>
+                          {needsAttention.toString().padStart(2, "0")}
+                        </strong>
+                        <span className="stat-description">
+                          Unavailable or playback unverified
+                        </span>
+                      </div>
+                    </div>
+                    <div className="stat">
+                      <span className="stat-icon neutral">
+                        <Icon name="link" />
+                      </span>
+                      <div>
+                        <span className="stat-label">Saved watch pages</span>
+                        <strong>
+                          {rows.length.toString().padStart(2, "0")}
+                        </strong>
+                        <span className="stat-description">
+                          {untested} waiting for a first check
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                  <RunMonitor sparrow={sparrow} compact />
+                  <ResultsTable
+                    rows={rows}
+                    now={sparrow.now}
+                    loading={sparrow.loading}
+                    onRecheck={(url) => start([url])}
+                    disabled={sparrow.running || sparrow.busy}
+                    onRefresh={sparrow.refresh}
+                    onAdd={() => setView("saved")}
+                  />
+                  <div className="evidence-note">
+                    <Icon name="activity" />
+                    <p>
+                      <strong>A snapshot, not a guarantee.</strong> Playback is
+                      sampled for about 10 seconds per source. Sites can change,
+                      streams can expire, and a short check cannot establish
+                      long-term reliability.
+                    </p>
+                  </div>
+                </>
+              )}
+              {view === "saved" && (
+                <LinkInput
+                  sites={sparrow.sites}
+                  add={sparrow.add}
+                  remove={sparrow.remove}
+                  discover={sparrow.discover}
+                  busy={sparrow.busy}
+                  onCheck={(url) => start([url])}
+                  running={sparrow.running}
+                />
+              )}
+              {view === "activity" && <RunMonitor sparrow={sparrow} />}
+            </>
+          )}
+          <footer className="page-footer">
+            <span>
+              Sparrow <span className="muted">/ Stream observatory</span>
+            </span>
+            <span className="muted">
+              {sparrow.sites.length} saved pages · up to 3 parallel checks
+            </span>
+          </footer>
+        </main>
+      </div>
     </div>
   );
 }

@@ -1,236 +1,130 @@
-import { useState, useRef, useEffect } from "react";
+import Icon from "./Icon";
+import { relativeTime } from "../api";
 
-const STATUS_RE = /\b(WORKING|SLOW|BROKEN|DOWN|REDIRECT-LOOP|TOO-MANY-ADS)\b/g;
-
-const STATUS_COLORS = {
-  WORKING: "#2dd4bf",
-  SLOW: "#fbbf24",
-  BROKEN: "#f97316",
-  DOWN: "#ef4444",
-  "REDIRECT-LOOP": "#a855f7",
-  "TOO-MANY-ADS": "#ec4899",
+const LABELS = {
+  running: "Checking playback",
+  cancelling: "Cancelling check",
+  completed: "Check complete",
+  cancelled: "Check cancelled",
+  failed: "Check failed",
+  interrupted: "Check interrupted",
 };
 
-function coloriseLine(line) {
-  const parts = [];
-  let last = 0;
-  let match;
-  STATUS_RE.lastIndex = 0;
-  while ((match = STATUS_RE.exec(line)) !== null) {
-    if (match.index > last) parts.push(line.slice(last, match.index));
-    parts.push(
-      <span key={match.index} style={{ color: STATUS_COLORS[match[0]], fontWeight: 600 }}>
-        {match[0]}
-      </span>
+export default function RunMonitor({ sparrow, compact = false }) {
+  const { run, running, events, connected, busy } = sparrow;
+  if (!run && compact) return null;
+  if (!run)
+    return (
+      <div className="panel empty-state">
+        <Icon name="activity" size={32} />
+        <h3>Ready for your first check.</h3>
+        <p>
+          Save a watch page, then choose “Check all pages” to observe playback.
+        </p>
+      </div>
     );
-    last = match.index + match[0].length;
-  }
-  if (last < line.length) parts.push(line.slice(last));
-  return parts;
-}
-
-function formatEventLine(msg) {
-  if (msg.type === "log") {
-    return msg.text ?? `[${(msg.level ?? "info").toUpperCase()}] ${msg.message ?? ""}`;
-  }
-  // site_start / site_result already appear as log lines from the event logger
-  if (msg.type === "run_start") {
-    return `Run started: ${msg.total} site(s), concurrency=${msg.concurrency}`;
-  }
-  if (msg.type === "run_done") {
-    if (msg.aborted) return "Run aborted.";
-    const c = msg.counts;
-    if (!c) return `Run finished in ${msg.elapsedSec}s`;
-    return `Run finished in ${msg.elapsedSec}s: WORKING=${c.working} SLOW=${c.slow} BROKEN=${c.broken} DOWN=${c.down}`;
-  }
-  if (msg.text) return msg.text;
-  return null;
-}
-
-export default function RunMonitor({ sites, onRunComplete }) {
-  const [running, setRunning] = useState(false);
-  const [lines, setLines] = useState([]);
-  const [exitCode, setExitCode] = useState(null);
-  const logRef = useRef(null);
-  const abortRef = useRef(null);
-
-  // Auto-scroll terminal
-  useEffect(() => {
-    if (logRef.current) {
-      logRef.current.scrollTop = logRef.current.scrollHeight;
-    }
-  }, [lines]);
-
-  // Kill the stream if this component ever truly unmounts (safety net)
-  useEffect(() => {
-    return () => abortRef.current?.abort();
-  }, []);
-
-  async function startRun() {
-    setRunning(true);
-    setLines([]);
-    setExitCode(null);
-
-    const ctrl = new AbortController();
-    abortRef.current = ctrl;
-
-    try {
-      const res = await fetch("/api/run", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({}),
-        signal: ctrl.signal,
-      });
-
-      if (res.status === 409) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(data.error ?? "A monitor run is already in progress");
-      }
-
-      if (!res.ok) {
-        throw new Error(`Server returned ${res.status}: is the API running?`);
-      }
-
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buf = "";
-
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buf += decoder.decode(value, { stream: true });
-        const parts = buf.split("\n\n");
-        buf = parts.pop();
-        for (const part of parts) {
-          const line = part.replace(/^data: /, "").trim();
-          if (!line) continue;
-          try {
-            const msg = JSON.parse(line);
-            if (msg.type === "done") {
-              setExitCode(msg.code ?? (msg.aborted ? 1 : 0));
-              setRunning(false);
-              onRunComplete?.();
-            } else {
-              const text = formatEventLine(msg);
-              if (text) {
-                const newLines = String(text).split("\n").filter(Boolean);
-                setLines((prev) => [...prev, ...newLines]);
-              }
-            }
-          } catch {
-            /* ignore malformed */
-          }
-        }
-      }
-    } catch (err) {
-      if (err.name !== "AbortError") {
-        setLines((prev) => [...prev, `[error] ${err.message}`]);
-      }
-      setRunning(false);
-    }
-  }
-
-  function stopRun() {
-    abortRef.current?.abort();
-    setRunning(false);
-  }
-
-  const canRun = sites.length > 0;
-
+  const progress = run.total
+    ? Math.round((run.completed / run.total) * 100)
+    : 0;
+  const runEvents = events.filter((event) => event.id.startsWith(`${run.id}:`));
+  const logs = runEvents.filter((event) => event.type === "log");
+  const completedSites = new Set(
+    runEvents
+      .filter((event) => event.type === "site_result")
+      .map((event) => event.site),
+  );
   return (
-    <div className="w-full max-w-2xl mx-auto">
-      {/* Controls */}
-      <div className="flex items-center gap-3">
-        {!running ? (
-          <button
-            onClick={startRun}
-            disabled={!canRun}
-            className="flex items-center gap-2 px-5 py-3 rounded-2xl font-semibold text-sm transition-all duration-200 disabled:opacity-40 disabled:cursor-not-allowed"
-            style={
-              canRun
-                ? {
-                    background: "linear-gradient(135deg, #6366f1, #8b5cf6)",
-                    color: "#fff",
-                    boxShadow: "0 0 24px #6366f133",
-                  }
-                : { background: "#1e2d4f", color: "#4a6080" }
+    <section
+      className={`run-panel panel ${compact ? "compact" : ""}`}
+      aria-label="Check progress"
+    >
+      <div className="run-summary">
+        <span className={`run-icon ${running ? "mint" : "neutral"}`}>
+          <Icon
+            name={
+              running
+                ? "activity"
+                : run.status === "completed"
+                  ? "check"
+                  : "stop"
             }
+          />
+        </span>
+        <div className="run-copy">
+          <strong>{LABELS[run.status]}</strong>
+          <span>
+            {run.completed} of {run.total} pages checked ·{" "}
+            {running
+              ? connected
+                ? "Live updates connected"
+                : "Reconnecting to live updates…"
+              : relativeTime(run.finished_at, sparrow.now)}
+          </span>
+        </div>
+        {running ? (
+          <button
+            className="button subtle"
+            disabled={busy || run.status === "cancelling"}
+            onClick={() => sparrow.cancel().catch(() => {})}
           >
-            <svg
-              width="15"
-              height="15"
-              viewBox="0 0 24 24"
-              fill="currentColor"
-            >
-              <polygon points="5,3 19,12 5,21" />
-            </svg>
-            Run Monitor
+            <Icon name="stop" size={14} />
+            {run.status === "cancelling" ? "Cancelling…" : "Cancel check"}
           </button>
         ) : (
-          <button
-            onClick={stopRun}
-            className="flex items-center gap-2 px-5 py-3 rounded-2xl font-semibold text-sm text-white transition-all duration-200"
-            style={{
-              background: "linear-gradient(135deg, #ef4444, #dc2626)",
-              boxShadow: "0 0 20px #ef444433",
-            }}
-          >
-            <svg
-              width="13"
-              height="13"
-              viewBox="0 0 24 24"
-              fill="currentColor"
-            >
-              <rect x="4" y="4" width="16" height="16" rx="2" />
-            </svg>
-            Stop
-          </button>
-        )}
-
-        {running && (
-          <div className="flex items-center gap-2 text-sm text-teal-400">
-            <span className="relative flex h-2 w-2">
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-teal-400 opacity-75" />
-              <span className="relative inline-flex rounded-full h-2 w-2 bg-teal-400" />
-            </span>
-            Probing sites…
-          </div>
-        )}
-
-        {!running && exitCode !== null && (
-          <span
-            className="text-sm"
-            style={{ color: exitCode === 0 ? "#2dd4bf" : "#ef4444" }}
-          >
-            {exitCode === 0 ? "✓ Completed successfully" : `✗ Exited with code ${exitCode}`}
-          </span>
-        )}
-
-        {!canRun && !running && (
-          <span className="text-xs text-[#2d4060]">Add sites first to run a check</span>
+          <span className="run-id">{run.id.slice(0, 8)}</span>
         )}
       </div>
-
-      {/* Terminal log — show as soon as run starts, even before first output */}
-      {(running || lines.length > 0) && (
+      {running && (
         <div
-          ref={logRef}
-          className="mt-4 rounded-xl border border-[#1e2d4f] bg-[#060a14] p-4 h-64 overflow-y-auto font-mono text-xs leading-relaxed"
-          style={{ color: "#7dd3fc" }}
+          className="progress-track"
+          role="progressbar"
+          aria-label="Pages checked"
+          aria-valuenow={run.completed}
+          aria-valuemin={0}
+          aria-valuemax={run.total}
         >
-          {lines.length === 0 && running && (
-            <span className="text-[#2d4060]">Launching browser probe…</span>
-          )}
-          {lines.map((line, i) => (
-            <div key={i} className="whitespace-pre-wrap break-all">
-              {coloriseLine(line)}
-            </div>
-          ))}
-          {running && (
-            <div className="inline-block w-2 h-3.5 bg-teal-400 animate-pulse ml-0.5" />
-          )}
+          <span style={{ width: `${progress}%` }} />
         </div>
       )}
-    </div>
+      {run.error && <p className="run-error">{run.error}</p>}
+      {!compact && (
+        <>
+          <div className="run-sites">
+            {run.sites.map((url) => (
+              <div key={url}>
+                <Icon
+                  name={
+                    completedSites.has(url) || run.status === "completed"
+                      ? "check"
+                      : "clock"
+                  }
+                  size={16}
+                />
+                <span>{url}</span>
+              </div>
+            ))}
+          </div>
+          <details className="log-details">
+            <summary>
+              Technical activity <span>{logs.length} recent events</span>
+            </summary>
+            <div className="log-output">
+              {logs.length ? (
+                logs.map((event) => (
+                  <div className={`log-${event.level}`} key={event.id}>
+                    {event.text ?? event.message}
+                  </div>
+                ))
+              ) : (
+                <p>
+                  Activity is replayed while a check is active. Saved results
+                  contain the playback evidence.
+                </p>
+              )}
+            </div>
+          </details>
+        </>
+      )}
+    </section>
   );
 }

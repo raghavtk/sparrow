@@ -7,16 +7,22 @@ const SOURCE_COLUMNS = [
   "working_source",
   "working_sources",
   "target_working",
-  "title"
+  "title",
+  "page_http_status",
 ];
 
 function ensureSourceColumns(db) {
   const existing = new Set(
-    db.prepare(`PRAGMA table_info(health_checks)`).all().map((row) => row.name)
+    db
+      .prepare(`PRAGMA table_info(health_checks)`)
+      .all()
+      .map((row) => row.name),
   );
   for (const column of SOURCE_COLUMNS) {
     if (!existing.has(column)) {
-      const type = column === "target_working" ? "INTEGER" : "TEXT";
+      const type = ["target_working", "page_http_status"].includes(column)
+        ? "INTEGER"
+        : "TEXT";
       db.exec(`ALTER TABLE health_checks ADD COLUMN ${column} ${type}`);
     }
   }
@@ -92,7 +98,8 @@ export function writeResult(db, result) {
       working_source,
       working_sources,
       target_working,
-      title
+      title,
+      page_http_status
     ) VALUES (
       @checked_at,
       @site_url,
@@ -115,7 +122,8 @@ export function writeResult(db, result) {
       @working_source,
       @working_sources,
       @target_working,
-      @title
+      @title,
+      @page_http_status
     )
   `);
 
@@ -141,6 +149,7 @@ export function writeResult(db, result) {
     working_source: toJson(result.working_source),
     working_sources: toJson(result.working_sources),
     target_working: result.target_working ?? null,
-    title: result.title ?? null
+    title: result.title ?? null,
+    page_http_status: result.page_http_status ?? null,
   });
 }

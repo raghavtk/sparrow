@@ -1,23 +1,22 @@
-import { chromium } from "playwright-extra";
+import { guardPlaywrightContext, guardPuppeteerPage } from "../security.js";
+import { chromium } from "playwright";
 import StealthPlugin from "puppeteer-extra-plugin-stealth";
 import puppeteerExtra from "puppeteer-extra";
 import puppeteer from "puppeteer";
 import AdblockerPlugin from "puppeteer-extra-plugin-adblocker";
 
-chromium.use(StealthPlugin());
 puppeteerExtra.use(StealthPlugin());
 puppeteerExtra.use(
   AdblockerPlugin({
-    blockTrackers: true
-  })
+    blockTrackers: true,
+  }),
 );
 
 const LAUNCH_ARGS = [
   "--disable-blink-features=AutomationControlled",
-  "--no-sandbox",
   "--disable-dev-shm-usage",
   "--disable-gpu",
-  "--disable-extensions"
+  "--disable-extensions",
 ];
 
 /**
@@ -25,7 +24,11 @@ const LAUNCH_ARGS = [
  * One Playwright browser (many contexts) + one Puppeteer browser (many pages)
  * avoids paying launch cost on every site / retry / fallback.
  */
-export function createBrowserPool({ headless = true } = {}) {
+export function createBrowserPool({
+  headless = true,
+  signal,
+  validateUrl,
+} = {}) {
   let pwBrowser = null;
   let pwLaunch = null;
   let ppBrowser = null;
@@ -39,7 +42,9 @@ export function createBrowserPool({ headless = true } = {}) {
       pwLaunch = chromium
         .launch({
           headless,
-          args: LAUNCH_ARGS
+          chromiumSandbox: true,
+          executablePath: process.env.SPARROW_BROWSER_EXECUTABLE || undefined,
+          args: LAUNCH_ARGS,
         })
         .then((browser) => {
           pwBrowser = browser;
@@ -62,7 +67,9 @@ export function createBrowserPool({ headless = true } = {}) {
         .launch({
           headless: headless ? "new" : false,
           args: LAUNCH_ARGS,
-          executablePath: puppeteer.executablePath()
+          executablePath:
+            process.env.SPARROW_BROWSER_EXECUTABLE ||
+            puppeteer.executablePath(),
         })
         .then((browser) => {
           ppBrowser = browser;
@@ -82,8 +89,14 @@ export function createBrowserPool({ headless = true } = {}) {
     const context = await browser.newContext({
       viewport: fingerprint.viewport,
       userAgent: fingerprint.userAgent,
-      javaScriptEnabled: true
+      javaScriptEnabled: true,
+      serviceWorkers: "block",
     });
+    if (closed || signal?.aborted) {
+      await context.close();
+      throw new Error("Browser pool is closed");
+    }
+    await guardPlaywrightContext(context, validateUrl);
     const page = await context.newPage();
     try {
       return await fn(page, context);
@@ -101,6 +114,8 @@ export function createBrowserPool({ headless = true } = {}) {
         : null;
     const page = context ? await context.newPage() : await browser.newPage();
     try {
+      if (closed || signal?.aborted) throw new Error("Browser pool is closed");
+      await guardPuppeteerPage(page, validateUrl);
       await page.setViewport(fingerprint.viewport).catch(() => null);
       await page.setUserAgent(fingerprint.userAgent);
       return await fn(page, browser);
@@ -112,6 +127,7 @@ export function createBrowserPool({ headless = true } = {}) {
 
   async function close() {
     closed = true;
+    await Promise.allSettled([pwLaunch, ppLaunch].filter(Boolean));
     const jobs = [];
     if (pwBrowser) jobs.push(pwBrowser.close().catch(() => null));
     if (ppBrowser) jobs.push(ppBrowser.close().catch(() => null));
@@ -123,6 +139,6 @@ export function createBrowserPool({ headless = true } = {}) {
   return {
     withPlaywrightPage,
     withPuppeteerPage,
-    close
+    close,
   };
 }

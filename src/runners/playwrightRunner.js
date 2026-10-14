@@ -1,6 +1,6 @@
-import { chromium } from "playwright-extra";
-import StealthPlugin from "puppeteer-extra-plugin-stealth";
+import { chromium } from "playwright";
 import { DEFAULTS } from "../config.js";
+import { withProbeDeadline } from "../probers/deadline.js";
 import {
   attachVideoSniffer,
   buildProbeResult,
@@ -12,23 +12,23 @@ import {
   isHardNavigationError,
   parsePotentialBotProtection,
   probeSourcesUntilPlay,
-  tryAcceptCookies
+  tryAcceptCookies,
 } from "../probers/common.js";
-
-chromium.use(StealthPlugin());
 
 async function probeOnPage(page, siteUrl, cfg, log, state, startTime) {
   page.setDefaultNavigationTimeout(cfg.pageNavigationTimeoutMs);
   page.setDefaultTimeout(cfg.pageNavigationTimeoutMs);
   attachVideoSniffer(page, state, "playwright", {
-    maxStreamCandidates: cfg.maxStreamCandidates
+    maxStreamCandidates: cfg.maxStreamCandidates,
   });
-  let mainNavigations = 0;
-  page.on("framenavigated", (frame) => {
-    if (frame !== page.mainFrame()) return;
-    mainNavigations += 1;
-    // Initial load is not a redirect; only subsequent main-frame navigations count.
-    if (mainNavigations > 1) state.redirects += 1;
+  page.on("request", (request) => {
+    if (!request.isNavigationRequest()) return;
+    try {
+      if (request.frame() === page.mainFrame() && request.redirectedFrom())
+        state.redirects += 1;
+    } catch {
+      /* Requests without a frame do not count as page redirects. */
+    }
   });
   page.on("popup", async (popup) => {
     state.adsArtifacts += 1;
@@ -37,8 +37,13 @@ async function probeOnPage(page, siteUrl, cfg, log, state, startTime) {
   });
   page.on("requestfailed", (req) => {
     const msg = req.failure()?.errorText ?? "";
-    if (isHardNavigationError(msg)) {
+    if (
+      req.isNavigationRequest() &&
+      req.frame() === page.mainFrame() &&
+      isHardNavigationError(msg)
+    ) {
       state.errors.push(msg);
+      state.navigationErrors.push(msg);
     }
   });
   const targets = buildTargetCandidates(siteUrl);
@@ -48,7 +53,10 @@ async function probeOnPage(page, siteUrl, cfg, log, state, startTime) {
       log.debug("Playwright hit site timeout; stopping candidate loop");
       break;
     }
-    if ((state.workingSources?.length ?? 0) >= (state.targetWorking ?? 1) && state.streamStarted) {
+    if (
+      (state.workingSources?.length ?? 0) >= (state.targetWorking ?? 1) &&
+      state.streamStarted
+    ) {
       break;
     }
     log.debug(`Playwright navigating to ${candidate}`);
@@ -62,15 +70,18 @@ async function probeOnPage(page, siteUrl, cfg, log, state, startTime) {
       });
     if (navError && isHardNavigationError(navError)) {
       state.errors.push(navError);
+      state.navigationErrors.push(navError);
       state.finalUrl = page.url();
       log.warn(`Playwright hard navigation failure — fail fast: ${navError}`);
       break;
     }
+    state.watchPageUrl = response?.url() ?? candidate;
     await humanizeDelay(100, 350);
     state.finalUrl = page.url();
     log.debug(`Playwright landed on ${state.finalUrl}`);
     if (response) {
       const status = response.status();
+      state.pageHttpStatus = status;
       log.debug(`Playwright page HTTP status: ${status}`);
       if (status >= 500) {
         state.errors.push(`Site returned ${status}`);
@@ -79,15 +90,20 @@ async function probeOnPage(page, siteUrl, cfg, log, state, startTime) {
     const html = await page.content();
     if (parsePotentialBotProtection(html)) {
       state.botProtectionDetected = true;
-      log.debug("Playwright detected possible bot protection; waiting before continuing");
+      log.debug(
+        "Playwright detected possible bot protection; waiting before continuing",
+      );
       await humanizeDelay(1500, 3000);
     }
     const cookiesAccepted = await tryAcceptCookies(page);
-    if (cookiesAccepted) log.debug("Playwright accepted a cookie/consent banner");
+    if (cookiesAccepted)
+      log.debug("Playwright accepted a cookie/consent banner");
     await captureContentTitle(page, state, candidate, log);
     await probeSourcesUntilPlay(page, state, cfg, log, startTime);
+    state.finalUrl = page.url();
     // Enough working sources for this page — skip remaining URL path candidates.
-    if ((state.workingSources?.length ?? 0) >= (state.targetWorking ?? 1)) break;
+    if ((state.workingSources?.length ?? 0) >= (state.targetWorking ?? 1))
+      break;
   }
   return buildProbeResult(state, "playwright", startTime, cfg);
 }
@@ -99,30 +115,40 @@ export async function runWithPlaywright(siteUrl, options = {}) {
   const fingerprint = chooseFingerprint();
   const startTime = Date.now();
   log.debug(
-    `Playwright viewport ${fingerprint.viewport.width}x${fingerprint.viewport.height}`
+    `Playwright viewport ${fingerprint.viewport.width}x${fingerprint.viewport.height}`,
   );
   if (cfg.browserPool?.withPlaywrightPage) {
     return cfg.browserPool.withPlaywrightPage(fingerprint, (page) =>
-      probeOnPage(page, siteUrl, cfg, log, state, startTime)
+      withProbeDeadline(page, state, "playwright", startTime, cfg, () =>
+        probeOnPage(page, siteUrl, cfg, log, state, startTime),
+      ),
     );
   }
   // Standalone fallback (CLI unit use without a pool)
   const browser = await chromium.launch({
     headless: cfg.headless,
+    chromiumSandbox: true,
+    executablePath: process.env.SPARROW_BROWSER_EXECUTABLE || undefined,
     args: [
       "--disable-blink-features=AutomationControlled",
-      "--no-sandbox",
-      "--disable-dev-shm-usage"
-    ]
+      "--disable-dev-shm-usage",
+    ],
   });
   const context = await browser.newContext({
     viewport: fingerprint.viewport,
     userAgent: fingerprint.userAgent,
-    javaScriptEnabled: true
+    javaScriptEnabled: true,
   });
   const page = await context.newPage();
   try {
-    return await probeOnPage(page, siteUrl, cfg, log, state, startTime);
+    return await withProbeDeadline(
+      page,
+      state,
+      "playwright",
+      startTime,
+      cfg,
+      () => probeOnPage(page, siteUrl, cfg, log, state, startTime),
+    );
   } finally {
     await context.close().catch(() => null);
     await browser.close().catch(() => null);

@@ -1,220 +1,112 @@
 # Sparrow
 
-Named after Captain Jack Sparrow — because this tool sails into rough waters, dodges traps, and checks whether the stream still plays.
+Sparrow checks the playback evidence behind a watch page and keeps the results in a private dashboard. The CLI and dashboard share the same browser probing core and SQLite history.
 
-This project is a production-style Node.js monitor for checking whether **authorized** video websites are alive and able to start a stream.
+## Run locally
 
-It is intended for availability research, QA, and infrastructure monitoring. Do not use this tool against systems you are not authorized to test.
+Use **Node 22.14+ within Node 22 LTS** (`.nvmrc` pins the tested version). The locked frontend tooling requires a modern Node runtime.
 
-CLI and UI both drive the same in-process `runMonitor` core and write to the same SQLite database.
-
-## Features
-
-- Reads input URLs from `sites.txt` (one URL per line).
-- Uses both:
-  - `playwright-extra` + stealth plugin
-  - `puppeteer-extra` + stealth plugin + adblocker plugin
-- Handles common hostile UI conditions:
-  - popups
-  - iframe/ad noise
-  - cookie banners
-  - basic bot protection pages (Cloudflare-style detection and delayed retry behavior)
-- Detects video stream network requests (`m3u8`, `mp4`, `webm` and relevant content types).
-- Enumerates aggregator **Server / Source / Mirror** UI controls and tries them until enough sources play:
-  - ≤3 discovered servers → stop after **1** working source
-  - ≥4 discovered servers → keep going until **2** working sources (reliability)
-- Collects metrics:
-  - video HTTP status
-  - TTFB (ms)
-  - approximate speed for first downloaded chunk up to 1MB (Mbps)
-  - playback start signal (`video.currentTime` increases)
-  - `sources_found` / `sources_tried` / `working_source` / `working_sources` for multi-source pages
-- Results UI: chronological expandable runs with exact server names and per-server breakdown.
-- Bounded site-level concurrency (default 3) with a shared Chromium browser pool so multi-site runs reuse browsers instead of relaunching per site.
-- Retry once on failures.
-- Stores all checks in SQLite (`results.db`).
-- Prints CLI report classifications:
-  - `WORKING`
-  - `SLOW`
-  - `BROKEN`
-  - `REDIRECT-LOOP`
-  - `TOO-MANY-ADS`
-  - `DOWN`
-
-## Requirements
-
-- Node.js 20+
-- npm 10+
-
-## Install
-
-```bash
-npm install
+```sh
+npm ci
 npx playwright install chromium
-cd frontend && npm install && cd ..
-```
-
-## Input file
-
-Edit `sites.txt`:
-
-```text
-https://example.org
-https://example.org/watch-movie/the-matrix-1999
-```
-
-Lines starting with `#` are ignored.
-
-## Run — CLI
-
-```bash
-npm start
-```
-
-Or with custom options:
-
-```bash
-node src/index.js --sites sites.txt --db results.db --headless true --concurrency 3
-```
-
-Use `--headless false` for visible debugging.
-
-Progress logging is enabled by default. Example output:
-
-```text
-[22:10:01] INFO  Reading sites from sites.txt
-[22:10:01] INFO  Loaded 3 site(s):
-[22:10:01] INFO    1. https://example.org/movie/550
-[22:10:01] INFO  Concurrency: 3 (shared browser pool)
-[22:10:01] ----  [1/3] Checking https://example.org/movie/550
-[22:10:01] ----  Launching Playwright probe
-[22:10:25]  OK   [1/3] BROKEN in 24.1s (player=yes, stream=no, engine=playwright)
-```
-
-Flags:
-
-- `--sites <path>` — sites list (default `sites.txt`)
-- `--db <path>` — SQLite path (default `results.db`)
-- `--headless true|false` — browser visibility (default `true`)
-- `--concurrency N` — max parallel site probes (default `3`)
-- `--verbose` or `-v` — step-by-step browser actions
-- `--quiet` or `-q` — suppress progress logs; only print the final table
-
-## Run — UI
-
-Start the API and Vite UI together:
-
-```bash
-npm run dev
-```
-
-Then open **http://localhost:5180** (Sparrow pins this port; it will fail loudly if 5180 is busy instead of hopping to 5174). The UI proxies `/api/*` to the Express server on port 3001.
-
-Or API only (serves built UI from `frontend/dist` if present):
-
-```bash
+npm --prefix frontend ci
+npm run build
 npm run server
 ```
 
-Build the UI for that static serve path:
+Open http://127.0.0.1:3001. Localhost is the default bind address. `npm run dev` runs Express plus Vite at http://localhost:5180.
 
-```bash
-cd frontend && npm run build
+## Dashboard
+
+- **Overview:** one latest check per saved page, with observed playback, source instructions, freshness, popups and challenges. Search, filter, recheck an individual page, and expand playback evidence or up to 30 historical checks.
+- **Saved pages:** add/remove individual watch URLs in SQLite. Changes from another browser cannot overwrite a stale copy of the entire list. `sites.txt` is imported once when the collection is first initialized.
+- **Listing discovery:** open the listing input mode to extract up to 30 candidate watch links. Choose the intended title explicitly, save it, then check playback. Generic discovery only follows obvious same-origin watch/movie/episode/event/live links. It does not certify content or compatibility.
+- **Activity:** saved progress events, completion/error state, and explicit cancellation. Closing or refreshing a tab only disconnects its progress subscription. It does not cancel the job.
+
+A server restart marks unfinished jobs **interrupted**. Recheck to start a new job; the saved collection, results, history, and activity survive restarts.
+
+## What a result establishes
+
+A source normally receives a 10-second observation window. Sparrow samples the largest visible video player across main and nested frames, attempts playback once, and records playback advancement, stalled samples, media errors, observation duration, and player/frame URLs. Hidden, small, or explicitly marked advertisement/trailer videos are excluded. Dynamic frame replacements and media loops are handled.
+
+Requests carry the source-attempt ID assigned before clicking. The selected player frame supplies attribution. Unattributed playback and default attempts that navigate away from the watch page remain unverified. A late response from an earlier attempt cannot supply the next mirror's metrics. Repeated URLs with different signing parameters do not count twice toward source coverage.
+
+- **WORKING:** consistent playback observed during the sample.
+- **SLOW:** playback observed, but the media response took over 3 seconds.
+- **BROKEN:** page reachable, playback not verified.
+- **DOWN:** page unavailable or main-page server failure.
+- **REDIRECT-LOOP:** configured navigation limit reached without playback.
+
+Popups and access challenges are separate signals. A failed advertising request does not make a working page DOWN. A failed mirror does not establish that the whole site is unavailable. `TOO-MANY-ADS` remains displayable for older history, but new popup counts do not override playback.
+
+Speed is left unmeasured: reading a cached body or playlist does not establish media delivery throughput. Two observed source URLs establish source coverage, not independent infrastructure or long-term reliability. Generic heuristics cannot always distinguish an unmarked video ad or validate that a player contains the requested title. Results are dated observations, not guarantees.
+
+## Compatibility
+
+The generic watch-page prober recognizes common Server/Source/Mirror buttons and select options. Provider names in a label pattern are not a support claim. The adapter boundary currently contains conservative generic listing discovery; no site-specific compatibility is advertised without real examples and repeatable tests.
+
+Controlled fixtures cover iframe playback, fast mirror selection, dead mirrors, stalled playback, advertising failures, popups, repeated signed URLs, listing discovery, private-network redirects, unrelated page navigation, and cross-frame media attribution. Real aggregator pages may require login or an access challenge; Sparrow reports uncertainty rather than solving challenges.
+
+## Functional tests
+
+```sh
+npm test
+npm --prefix frontend run lint
+npm run build
 ```
 
-The Run tab starts the same `runMonitor` core in-process (not a CLI subprocess). Stop aborts the run when the SSE connection closes. Overlapping runs return HTTP 409.
+The suite serves a checked-in, attributed CC0 video on a local fixture server and exercises real Chromium playback, API behavior, and the built React dashboard. It verifies source selection, playback confidence, access controls, bounded jobs, shared edits, reconnect after refresh, cancellation, latest-versus-history results, search, and mobile overflow. The test command builds the frontend first. Fixture-origin access is injected only in tests; there is no environment switch that disables destination validation.
 
-## API routes
+`SPARROW_BROWSER_EXECUTABLE` optionally selects an already-installed Chromium-compatible executable. Normally Playwright uses its installed Chromium and Puppeteer uses its installed browser.
 
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/api/sites` | List URLs from `sites.txt` |
-| `POST` | `/api/sites` | Replace `sites.txt` — body `{ "sites": ["https://…"] }` |
-| `POST` | `/api/run` | Start a monitor run; streams SSE JSON events. Optional body: `{ "concurrency": 3, "headless": true }`. Rejects with 409 if a run is already active. |
-| `GET` | `/api/results` | Latest 200 rows from `results.db` |
+## Private access and resource limits
 
-### SSE events from `POST /api/run`
+Set `SPARROW_ACCESS_TOKEN` to enable a private access-key screen and HttpOnly, SameSite session cookies. API clients can also use an `Authorization: Bearer ...` header. Listening beyond localhost requires the access token.
 
-| `type` | Meaning |
-|--------|---------|
-| `run_start` | Run began (`total`, `sites`, `concurrency`, …) |
-| `log` | Progress line (`level`, `message`, `text`) |
-| `site_start` | Site probe started |
-| `site_result` | Site finished (`row`, `completed`/`total`) |
-| `run_done` | Run finished or aborted (`counts`, `aborted`) |
-| `done` | Stream complete (`code`) — UI completion signal |
+The API accepts HTTP/HTTPS URLs without credentials, on standard web ports. Private/reserved IPs and DNS answers are rejected. Browser requests and redirects are checked too, service workers are bypassed/blocked, WebSockets are blocked, and the Puppeteer fallback disables dedicated/shared workers. One browser job or listing discovery runs at a time, with at most 30 pages and 3 parallel probes. Each engine has a page deadline; cancellation closes active browser workers.
 
-## Output
+Use HTTPS and a private network/VPN or authenticated reverse proxy for shared deployment. Application DNS checks are defense in depth: they cannot pin Chromium's subsequent DNS resolution or replace egress isolation against DNS rebinding. An exposed worker host needs firewall rules blocking private networks, metadata endpoints, and other sensitive destinations. Chromium sandboxing is enabled for Playwright and explicit `--no-sandbox` launch arguments have been removed.
 
-- Console table summary (CLI).
-- SQLite database file: `results.db` (shared by CLI and UI).
+Configuration:
 
-Table: `health_checks`
+- `PORT` / `HOST`: default `3001` / `127.0.0.1`.
+- `SPARROW_DB_PATH`: persistent SQLite path, default `results.db`.
+- `SPARROW_ACCESS_TOKEN`: shared private access key; never stored by the frontend.
+- `SPARROW_TRUST_PROXY=1`: trust one reverse proxy for HTTPS scheme detection. Enable only behind that proxy; then session cookies become Secure on HTTPS.
 
-Important fields:
-- `site_url`
-- `final_url`
-- `classification`
-- `http_status`
-- `ttfb_ms`
-- `speed_mbps`
-- `stream_started`
-- `stream_url`
-- `player_found`
-- `sources_found` (JSON: network URLs + UI Server/Source/Mirror labels)
-- `sources_tried` (JSON: per-attempt outcomes with `display_name`, TTFB, speed, play result)
-- `working_source` (JSON: best working source — lowest TTFB)
-- `working_sources` (JSON: all sources that played)
-- `target_working` (1 or 2 — reliability target for that run)
-- `ads_artifacts`
-- `bot_protection_detected`
-- `error_message`
+## Container scaffold
 
-## Multi-source probing
+`Dockerfile` and `compose.yaml` build the frontend, install Chromium, run Node as a non-root user, persist SQLite at `/data/results.db`, and set CPU, memory, process, and shared-memory limits. Compose binds the published port to localhost.
 
-On each watch page Sparrow discovers Server/Source/Mirror controls, then tries **Auto** (no click) followed by each control until the reliability target is met:
+```sh
+# Set SPARROW_ACCESS_TOKEN in your environment first.
+docker compose up --build -d
+```
 
-| Discovered UI servers | Target working |
-| --------------------- | -------------- |
-| 0–3                   | 1              |
-| 4+                    | 2              |
+The container scaffold has not been exercised in this Windows session. Keeping Chromium's sandbox enabled requires a host/container configuration that supports unprivileged user namespaces and appropriate seccomp rules; do not solve launch failures by disabling the sandbox. Configure egress restrictions and an HTTPS reverse proxy before sharing it beyond the local machine.
 
-The Results tab lists every run chronologically. Expand a row to see each server attempt (name, played/no play, HTTP, TTFB, speed, stream URL). Summary shows exact working names (e.g. `Vidcloud · Server 2`) and `2/2 working` when reliable.
+## CLI
 
-## Classification logic
+```sh
+node src/index.js --sites sites.txt --db results.db --headless true --concurrency 3
+```
 
-- `DOWN`: major connectivity/server failure or 5xx on the stream — not “tried several dead mirrors.”
-- `BROKEN`: site/page is up (or source UI present) but no source started playback.
-- `SLOW`: at least one source plays, but TTFB or speed is poor.
-- `REDIRECT-LOOP`: redirect count reaches configured ceiling.
-- `TOO-MANY-ADS`: ad/popup/iframe artifacts exceed threshold.
-- `WORKING`: at least one source plays with acceptable performance.
+`sites.txt` contains exact watch-page URLs, one per line; `#` starts a comment. Mixed titles keep their own metadata. There are no guessed Matrix watch paths. `--verbose` shows browser steps and `--quiet` keeps only the final report.
 
-## Notes on bot protection handling
+The dashboard uses system fonts, inline SVG icons, and plain CSS. Live checks update through SSE; idle dashboards refresh every 30 seconds while visible, pause polling in hidden tabs, and load archived activity only when opened.
 
-The monitor includes practical anti-bot resilience:
-- realistic user agents and viewport sizes
-- randomized human-like delays
-- cookie acceptance attempts
-- detection of Cloudflare / challenge pages and waiting before retry
+## API
 
-Some advanced anti-bot systems may still block automation. In those cases results are recorded with errors for operational awareness.
+- `GET /api/session`, `POST /api/session` with `{ "token": "..." }`.
+- `GET /api/sites`, `POST /api/sites` with `{ "url": "https://..." }`, `DELETE /api/sites` with the same shape.
+- `POST /api/discover` with `{ "url": "https://..." }` returns candidate watch links for selection.
+- `POST /api/runs` with optional `{ "sites": ["https://..."], "concurrency": 3 }` returns HTTP 202 and a run ID. URLs must already be saved.
+- `GET /api/runs/latest`, `GET /api/runs/:id`.
+- `GET /api/runs/:id/events` streams saved and live SSE events. Reconnection supports `Last-Event-ID` or `?after=<event-id>`.
+- `POST /api/runs/:id/cancel` cancels explicitly.
+- `GET /api/results` returns the latest check for each saved page.
+- `GET /api/history?url=<encoded-watch-url>` returns up to 30 historical checks for that URL.
 
-## Project structure
+The former whole-list overwrite and disconnect-driven `POST /api/run` endpoints have been replaced by incremental edits and persistent jobs.
 
-- `src/index.js` — CLI entry
-- `src/monitor.js` — shared orchestration, events, concurrency, retry, reporting
-- `src/browsers/pool.js` — shared Playwright/Puppeteer Chromium pool for a run
-- `server.js` — Express API (in-process `runMonitor` + SSE)
-- `frontend/` — React UI (Sites / Run / Results)
-- `src/runners/playwrightRunner.js` — primary probe engine
-- `src/runners/puppeteerRunner.js` — fallback probe engine
-- `src/probers/common.js` — shared probing helpers
-- `src/db.js` — SQLite persistence
-- `src/classifier.js` — status classification
-- `src/config.js` — tunable constants
-- `src/logger.js` — CLI and event loggers
-
-## Legal / ethics
-
-Only test systems where you have explicit permission. This code is provided for educational and defensive availability monitoring use cases.
+Only probe websites you are authorized to test.

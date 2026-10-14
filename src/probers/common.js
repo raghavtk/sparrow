@@ -1,9 +1,11 @@
+import { detectPlayerAndPlayback, resetPlayback } from "./playback.js";
+export { detectPlayerAndPlayback } from "./playback.js";
+export { attachVideoSniffer } from "./sniffer.js";
 import { DEFAULTS } from "../config.js";
-import { sleep, randomFrom, randomInt, isVideoRequest } from "../utils.js";
+import { sleep, randomFrom, randomInt } from "../utils.js";
 
 export function createBaseState() {
   return {
-    candidateStream: null,
     candidateStreams: [],
     sourcesFound: [],
     sourcesTried: [],
@@ -16,30 +18,22 @@ export function createBaseState() {
     adsArtifacts: 0,
     botProtectionDetected: false,
     errors: [],
+    navigationErrors: [],
+    pageHttpStatus: null,
+    watchPageUrl: null,
     finalUrl: null,
-    contentTitle: null
+    contentTitle: null,
   };
 }
 
 export function buildTargetCandidates(baseUrl) {
-  const candidates = [baseUrl];
-  try {
-    const u = new URL(baseUrl);
-    if (!/watch|movie|stream/i.test(u.pathname)) {
-      for (const path of DEFAULTS.commonWatchPaths) {
-        candidates.push(`${u.origin}${path}`);
-      }
-    }
-  } catch {
-    return candidates;
-  }
-  return [...new Set(candidates)];
+  return [baseUrl];
 }
 
 export function chooseFingerprint() {
   return {
     userAgent: randomFrom(DEFAULTS.userAgents),
-    viewport: randomFrom(DEFAULTS.realisticViewports)
+    viewport: randomFrom(DEFAULTS.realisticViewports),
   };
 }
 
@@ -51,7 +45,6 @@ export function parsePotentialBotProtection(content = "") {
   const lower = content.toLowerCase();
   return (
     lower.includes("checking your browser") ||
-    lower.includes("cloudflare") ||
     lower.includes("attention required") ||
     lower.includes("ddos-guard") ||
     lower.includes("just a moment")
@@ -61,7 +54,7 @@ export function parsePotentialBotProtection(content = "") {
 /** DNS / TCP failures where waiting for a stream cannot help. */
 export function isHardNavigationError(message = "") {
   return /NAME_NOT_RESOLVED|ERR_NAME_NOT_RESOLVED|CONNECTION_REFUSED|ERR_CONNECTION_REFUSED|ERR_CONNECTION_RESET|ERR_CONNECTION_CLOSED|ERR_ADDRESS_UNREACHABLE|ENOTFOUND|ECONNREFUSED|NS_ERROR_UNKNOWN_HOST/i.test(
-    message
+    message,
   );
 }
 
@@ -72,7 +65,8 @@ export function isIgnorableRequestFailure(message = "") {
 
 /** ≤3 UI servers → 1 working; ≥4 → 2 working. */
 export function targetWorkingCount(uiServerCount, cfg = DEFAULTS) {
-  const threshold = cfg.dualWorkingServerThreshold ?? DEFAULTS.dualWorkingServerThreshold;
+  const threshold =
+    cfg.dualWorkingServerThreshold ?? DEFAULTS.dualWorkingServerThreshold;
   return uiServerCount <= threshold ? 1 : 2;
 }
 
@@ -102,7 +96,7 @@ export function guessTitleFromUrl(url) {
       "pages",
       "stream",
       "embed",
-      "watch-movie"
+      "watch-movie",
     ]);
     let slug = null;
     for (let i = parts.length - 1; i >= 0; i -= 1) {
@@ -115,7 +109,10 @@ export function guessTitleFromUrl(url) {
     if (!slug) return null;
     // "936075-michael" / "the-matrix-1999"
     slug = slug.replace(/^\d{3,8}[-_]+/, "");
-    slug = slug.replace(/[-_+]+/g, " ").replace(/\s+/g, " ").trim();
+    slug = slug
+      .replace(/[-_+]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
     if (!slug || slug.length < 2) return null;
     return titleCaseWords(slug).slice(0, 120);
   } catch {
@@ -142,7 +139,10 @@ function brandTokensFromUrl(pageUrl) {
     const base = host.split(".")[0] || "";
     const tokens = new Set([host, base]);
     // flickystream → flicky stream variants
-    const spaced = base.replace(/([a-z])([A-Z])/g, "$1 $2").replace(/stream|flix|play|cinema|movies?/gi, "").trim();
+    const spaced = base
+      .replace(/([a-z])([A-Z])/g, "$1 $2")
+      .replace(/stream|flix|play|cinema|movies?/gi, "")
+      .trim();
     if (spaced) tokens.add(spaced);
     tokens.add(base.replace(/(stream|flix|movies?|play|tv|watch)$/i, ""));
     return [...tokens].filter((t) => t && t.length >= 3);
@@ -159,7 +159,8 @@ export function isLikelySiteBrand(title, pageUrl) {
   for (const brand of brandTokensFromUrl(pageUrl)) {
     const b = brand.toLowerCase().replace(/[^a-z0-9]/g, "");
     if (!b || b.length < 3) continue;
-    if (compact === b || compact.includes(b) || b.includes(compact)) return true;
+    if (compact === b || compact.includes(b) || b.includes(compact))
+      return true;
   }
   // Generic streaming-site sounding single/double tokens with no year
   if (
@@ -180,7 +181,8 @@ export function scoreMovieTitle(title, pageUrl, source = "page") {
   if (source === "url") score += 12;
   if (source === "page") score += 6;
   if (source === "og") score += 8;
-  if (/\(\s*(19|20)\d{2}\s*\)/.test(title) || /\b(19|20)\d{2}\b/.test(title)) score += 4;
+  if (/\(\s*(19|20)\d{2}\s*\)/.test(title) || /\b(19|20)\d{2}\b/.test(title))
+    score += 4;
   if (title.split(/\s+/).length >= 2) score += 2;
   if (title.length >= 2 && title.length <= 80) score += 1;
   // Prefer concise titles over review blurbs
@@ -207,7 +209,7 @@ export function cleanContentTitle(raw, pageUrl) {
 
   t = t.replace(
     /\b(watch(\s+online)?|online\s+free|full\s+movie|streaming|free\s+online|hd)\b/gi,
-    ""
+    "",
   );
   t = t.replace(/\s{2,}/g, " ").replace(/^[\s\-–—|:]+|[\s\-–—|:]+$/g, "");
 
@@ -215,17 +217,32 @@ export function cleanContentTitle(raw, pageUrl) {
     if (pageUrl) {
       const host = new URL(pageUrl).hostname.replace(/^www\./i, "");
       const hostRe = new RegExp(host.replace(/\./g, "\\."), "ig");
-      t = t.replace(hostRe, "").replace(/\s{2,}/g, " ").trim();
+      t = t
+        .replace(hostRe, "")
+        .replace(/\s{2,}/g, " ")
+        .trim();
       for (const brand of brandTokensFromUrl(pageUrl)) {
-        const re = new RegExp(`\\b${brand.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "ig");
-        t = t.replace(re, "").replace(/\s{2,}/g, " ").trim();
+        const re = new RegExp(
+          `\\b${brand.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`,
+          "ig",
+        );
+        t = t
+          .replace(re, "")
+          .replace(/\s{2,}/g, " ")
+          .trim();
       }
     }
   } catch {
     // ignore
   }
 
-  if (!t || /^(home|movies?|watch|streaming)$/i.test(t)) return null;
+  if (
+    !t ||
+    /^(home|movies?|watch|streaming|player|attention required!?|just a moment[.!]*|access denied|sorry,? you have been blocked|checking your browser[.!]*)$/i.test(
+      t,
+    )
+  )
+    return null;
   if (isLikelySiteBrand(t, pageUrl)) return null;
   return t.slice(0, 120);
 }
@@ -243,7 +260,9 @@ async function collectTitleCandidatesFromPage(page, pageUrl) {
     };
 
     // schema.org Movie / TVSeries — strongest on-page signal
-    for (const script of document.querySelectorAll('script[type="application/ld+json"]')) {
+    for (const script of document.querySelectorAll(
+      'script[type="application/ld+json"]',
+    )) {
       try {
         const data = JSON.parse(script.textContent || "null");
         const nodes = Array.isArray(data) ? data : [data];
@@ -254,7 +273,11 @@ async function collectTitleCandidatesFromPage(page, pageUrl) {
             if (!item || typeof item !== "object") continue;
             const type = item["@type"];
             const types = Array.isArray(type) ? type : [type];
-            if (types.some((t) => /^(Movie|TVSeries|TVEpisode|VideoObject)$/i.test(String(t)))) {
+            if (
+              types.some((t) =>
+                /^(Movie|TVSeries|TVEpisode|VideoObject)$/i.test(String(t)),
+              )
+            ) {
               push(item.name || item.headline, "jsonld");
             }
           }
@@ -267,7 +290,10 @@ async function collectTitleCandidatesFromPage(page, pageUrl) {
     push(document.querySelector('meta[property="og:title"]')?.content, "og");
     push(document.querySelector('meta[name="twitter:title"]')?.content, "og");
     push(document.querySelector('meta[name="title"]')?.content, "og");
-    push(document.querySelector('[itemprop="name"]')?.getAttribute("content"), "page");
+    push(
+      document.querySelector('[itemprop="name"]')?.getAttribute("content"),
+      "page",
+    );
     push(document.querySelector('[itemprop="name"]')?.textContent, "page");
 
     for (const h of document.querySelectorAll("h1")) {
@@ -279,14 +305,14 @@ async function collectTitleCandidatesFromPage(page, pageUrl) {
     }
 
     for (const el of document.querySelectorAll(
-      ".movie-title, .film-title, .media-title, .title, [class*='movie-title'], [class*='film-title'], [class*='detail-title']"
+      ".movie-title, .film-title, .media-title, .title, [class*='movie-title'], [class*='film-title'], [class*='detail-title']",
     )) {
       push(el.innerText || el.textContent, "page");
     }
 
     // Poster / hero image alt often is exactly the title
     for (const img of document.querySelectorAll(
-      "img[alt], img[class*='poster'], img[class*='Poster']"
+      "img[alt], img[class*='poster'], img[class*='Poster']",
     )) {
       const alt = (img.getAttribute("alt") || "").trim();
       if (alt && alt.length >= 2 && alt.length <= 80) push(alt, "page");
@@ -303,7 +329,7 @@ async function collectTitleCandidatesFromPage(page, pageUrl) {
     scored.push({
       title: cleaned,
       score: scoreMovieTitle(cleaned, pageUrl, source),
-      source
+      source,
     });
   }
   scored.sort((a, b) => b.score - a.score);
@@ -340,15 +366,21 @@ export async function captureContentTitle(page, state, pageUrl, log) {
 
   const candidates = [];
   if (fromPage) {
-    candidates.push({ title: fromPage, score: scoreMovieTitle(fromPage, url, "page") + 4 });
+    candidates.push({
+      title: fromPage,
+      score: scoreMovieTitle(fromPage, url, "page") + 16,
+    });
   }
   if (fromUrl) {
-    candidates.push({ title: fromUrl, score: scoreMovieTitle(fromUrl, url, "url") });
+    candidates.push({
+      title: fromUrl,
+      score: scoreMovieTitle(fromUrl, url, "url"),
+    });
   }
   if (state.contentTitle && !isLikelySiteBrand(state.contentTitle, url)) {
     candidates.push({
       title: state.contentTitle,
-      score: scoreMovieTitle(state.contentTitle, url, "page")
+      score: scoreMovieTitle(state.contentTitle, url, "page"),
     });
   }
 
@@ -379,15 +411,19 @@ export function displayNameForSource({ kind, label, stream_url } = {}) {
 export function pickBestWorking(workingSources = []) {
   if (!workingSources.length) return null;
   const scored = [...workingSources].sort((a, b) => {
-    const at = typeof a.ttfb_ms === "number" ? a.ttfb_ms : Number.POSITIVE_INFINITY;
-    const bt = typeof b.ttfb_ms === "number" ? b.ttfb_ms : Number.POSITIVE_INFINITY;
+    const at =
+      typeof a.ttfb_ms === "number" ? a.ttfb_ms : Number.POSITIVE_INFINITY;
+    const bt =
+      typeof b.ttfb_ms === "number" ? b.ttfb_ms : Number.POSITIVE_INFINITY;
     return at - bt;
   });
   return scored[0];
 }
 
 export function meetsWorkingTarget(probed, cfg = DEFAULTS) {
-  const uiCount = (probed?.sources_found || []).filter((s) => s.kind === "ui").length;
+  const uiCount = (probed?.sources_found || []).filter(
+    (s) => s.kind === "ui",
+  ).length;
   const target = probed?.target_working ?? targetWorkingCount(uiCount, cfg);
   const working = Array.isArray(probed?.working_sources)
     ? probed.working_sources.length
@@ -404,7 +440,7 @@ export async function tryAcceptCookies(pageApi) {
     "button:has-text('Agree')",
     "#onetrust-accept-btn-handler",
     ".cookie-accept",
-    "[aria-label*='accept' i]"
+    "[aria-label*='accept' i]",
   ];
 
   for (const selector of selectors) {
@@ -431,170 +467,6 @@ export async function tryAcceptCookies(pageApi) {
   return false;
 }
 
-function rememberStream(state, stream, maxCandidates) {
-  if (state.candidateStreams.some((s) => s.stream_url === stream.stream_url)) {
-    return false;
-  }
-  if (state.candidateStreams.length >= maxCandidates) return false;
-  state.candidateStreams.push(stream);
-  if (!state.candidateStream) state.candidateStream = stream;
-
-  if (!state.sourcesFound.some((s) => s.kind === "network" && s.url === stream.stream_url)) {
-    const displayName = displayNameForSource({
-      kind: "network",
-      label: null,
-      stream_url: stream.stream_url
-    });
-    state.sourcesFound.push({
-      kind: "network",
-      url: stream.stream_url,
-      label: displayName,
-      display_name: displayName
-    });
-  }
-  return true;
-}
-
-export function attachVideoSniffer(pageLike, state, engineName, options = {}) {
-  const maxCandidates = options.maxStreamCandidates ?? DEFAULTS.maxStreamCandidates;
-  const sampleBodies = options.sampleBodies !== false;
-  const requestStartTimes = new Map();
-  const getPropValue = (obj, key) => {
-    const candidate = obj?.[key];
-    if (typeof candidate === "function") return candidate.call(obj);
-    return candidate;
-  };
-
-  pageLike.on("request", (req) => {
-    const url = getPropValue(req, "url");
-    requestStartTimes.set(url, Date.now());
-  });
-
-  pageLike.on("response", async (res) => {
-    try {
-      const url = getPropValue(res, "url");
-      const headersCandidate = getPropValue(res, "headers");
-      const headers =
-        headersCandidate && typeof headersCandidate.then === "function"
-          ? await headersCandidate
-          : headersCandidate;
-      const contentType = headers?.["content-type"] ?? headers?.["Content-Type"] ?? "";
-      if (!isVideoRequest(url, contentType)) return;
-      if (state.candidateStreams.some((s) => s.stream_url === url)) return;
-      if (state.candidateStreams.length >= maxCandidates) return;
-
-      const start = requestStartTimes.get(url) ?? Date.now();
-      const ttfbMs = Date.now() - start;
-      const status = getPropValue(res, "status");
-
-      let speedMbps = null;
-      // Sample a few bodies so multiple working sources can carry Mbps.
-      const shouldSample = sampleBodies && state.candidateStreams.length < 4;
-      if (shouldSample) {
-        try {
-          const contentLength = Number(
-            headers?.["content-length"] ?? headers?.["Content-Length"] ?? NaN
-          );
-          if (Number.isFinite(contentLength) && contentLength > DEFAULTS.sampleDownloadBytes * 4) {
-            speedMbps = null;
-          } else {
-            const readStart = Date.now();
-            const bodyBuffer = await Promise.race([
-              res.body(),
-              sleep(2500).then(() => null)
-            ]);
-            if (bodyBuffer) {
-              const capped = Math.min(bodyBuffer.length, DEFAULTS.sampleDownloadBytes);
-              const elapsedSec = Math.max((Date.now() - readStart) / 1000, 0.001);
-              speedMbps = (capped * 8) / elapsedSec / 1_000_000;
-            }
-          }
-        } catch {
-          // If body cannot be read (stream chunked/cors), keep metric null.
-        }
-      }
-
-      rememberStream(
-        state,
-        {
-          stream_url: url,
-          http_status: status,
-          ttfb_ms: ttfbMs,
-          speed_mbps: speedMbps,
-          engine: engineName
-        },
-        maxCandidates
-      );
-    } catch (err) {
-      state.errors.push(`Video sniff error: ${err.message}`);
-    }
-  });
-}
-
-/**
- * Wait until at least one stream is known, or a new stream appears after `baselineCount`.
- */
-export async function waitForStreamSignal(state, timeoutMs, baselineCount = 0) {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    if (state.candidateStreams.length > baselineCount) return true;
-    if (baselineCount === 0 && state.candidateStream) return true;
-    await sleep(150);
-  }
-  return state.candidateStreams.length > baselineCount || Boolean(state.candidateStream);
-}
-
-export async function detectPlayerAndPlayback(page, observeMs = 2000) {
-  const playerFound = await page.evaluate(() => {
-    const hasVideo = !!document.querySelector("video");
-    const hasIframePlayer = !!document.querySelector(
-      "iframe[src*='embed'], iframe[src*='player']"
-    );
-    return hasVideo || hasIframePlayer;
-  });
-
-  let streamStarted = false;
-  if (playerFound) {
-    streamStarted = await page.evaluate(async (maxMs) => {
-      const video = document.querySelector("video");
-      if (!video) return false;
-      try {
-        if (video.paused) {
-          await video.play().catch(() => null);
-        }
-      } catch {
-        // ignore play error
-      }
-      const startTime = video.currentTime;
-      const deadline = Date.now() + maxMs;
-      while (Date.now() < deadline) {
-        if (video.currentTime > startTime + 0.2) return true;
-        await new Promise((r) => setTimeout(r, 200));
-      }
-      return video.currentTime > startTime + 0.2;
-    }, observeMs);
-  }
-
-  return { playerFound, streamStarted };
-}
-
-async function resetPlayback(page) {
-  try {
-    await page.evaluate(() => {
-      const video = document.querySelector("video");
-      if (!video) return;
-      try {
-        video.pause();
-        video.currentTime = 0;
-      } catch {
-        // ignore
-      }
-    });
-  } catch {
-    // ignore
-  }
-}
-
 /**
  * Open collapsed Server/Source dropdowns so hidden options become discoverable.
  */
@@ -606,8 +478,8 @@ export async function openSourceMenus(page, log) {
       const skipRe = /accept|cookie|sign|login|share|download|close|×|✕/i;
       const candidates = [
         ...document.querySelectorAll(
-          'button, a, [role="button"], [aria-haspopup], select, summary, .dropdown-toggle, [class*="dropdown"]'
-        )
+          "[aria-haspopup], select, summary, .dropdown-toggle",
+        ),
       ];
       let n = 0;
       for (const el of candidates) {
@@ -618,12 +490,20 @@ export async function openSourceMenus(page, log) {
           n += 1;
           continue;
         }
-        const label = (el.innerText || el.getAttribute("aria-label") || el.title || "")
+        const label = (
+          el.innerText ||
+          el.getAttribute("aria-label") ||
+          el.title ||
+          ""
+        )
           .trim()
           .replace(/\s+/g, " ")
           .slice(0, 60);
         if (!label || label.length > 40 || skipRe.test(label)) continue;
-        if (!triggerRe.test(label) && !/server|source|mirror|provider/i.test(el.className || "")) {
+        if (
+          !triggerRe.test(label) &&
+          !/server|source|mirror|provider/i.test(el.className || "")
+        ) {
           continue;
         }
         const style = window.getComputedStyle(el);
@@ -657,7 +537,8 @@ export async function discoverSourceControls(page, maxControls = 12) {
     return await page.evaluate((limit) => {
       const labelRe =
         /server|source|mirror|hd\s*\d+|vip|embed|player\s*\d+|option\s*\d+|vidcloud|filemoon|streamtape|dood|mixdrop|mp4upload|upstream|voe|rabbit|luluvdo|supermega|^s\s*\d+$|^server\s*\d+$|^\d+$/i;
-      const classRe = /server|source|mirror|embed|provider|host|player-btn|btn-server/i;
+      const classRe =
+        /(?:^|[\s_-])(?:server|source|mirror|embed|provider|host)(?:$|[\s_-])|player-btn|btn-server/i;
       const skipRe =
         /accept|cookie|sign|login|register|subscribe|share|download|trailer|facebook|twitter|reddit|discord|^close$|closing|×|✕|dismiss|cancel|menu|home|search/i;
       const nodes = [
@@ -680,9 +561,9 @@ export async function discoverSourceControls(page, maxControls = 12) {
             "[class*='mirror']",
             "[class*='provider']",
             "li",
-            "select option"
-          ].join(",")
-        )
+            "select option",
+          ].join(","),
+        ),
       ];
       const seen = new Set();
       const out = [];
@@ -693,15 +574,24 @@ export async function discoverSourceControls(page, maxControls = 12) {
         if (skipRe.test(cleaned)) return;
         // Bare numbers only if nested under a server/source-ish parent.
         if (/^\d{1,2}$/.test(cleaned)) {
-          const parentText = (el.closest("[class*='server'], [class*='source'], [class*='mirror'], [class*='provider'], select, ul, ol")?.className || "") +
-            (el.parentElement?.className || "");
-          if (!classRe.test(String(parentText)) && el.tagName !== "OPTION") return;
+          const parentText =
+            (el.closest(
+              "[class*='server'], [class*='source'], [class*='mirror'], [class*='provider'], select, ul, ol",
+            )?.className || "") + (el.parentElement?.className || "");
+          if (!classRe.test(String(parentText)) && el.tagName !== "OPTION")
+            return;
         }
         const className = typeof el.className === "string" ? el.className : "";
         const matchesLabel = labelRe.test(cleaned);
-        const matchesClass = classRe.test(className) || el.tagName === "OPTION";
+        const matchesClass =
+          classRe.test(className) ||
+          el.tagName === "OPTION" ||
+          el.hasAttribute("data-server") ||
+          el.hasAttribute("data-source") ||
+          el.hasAttribute("data-provider");
         if (!matchesLabel && !matchesClass) return;
-        if (!matchesLabel && matchesClass && cleaned.split(" ").length > 4) return;
+        if (!matchesLabel && matchesClass && cleaned.split(" ").length > 4)
+          return;
 
         const key = cleaned.toLowerCase();
         if (seen.has(key)) return;
@@ -713,11 +603,29 @@ export async function discoverSourceControls(page, maxControls = 12) {
       };
 
       for (const el of nodes) {
-        if (!(el instanceof HTMLElement) && !(el instanceof HTMLOptionElement)) continue;
+        if (!(el instanceof HTMLElement) && !(el instanceof HTMLOptionElement))
+          continue;
         if (el instanceof HTMLOptionElement) {
+          const select = el.closest("select");
+          const context = [
+            select?.id,
+            select?.name,
+            select?.className,
+            select?.getAttribute("aria-label"),
+          ].join(" ");
+          if (
+            !/(?:^|[\s_-])(?:server|source|mirror|provider)/i.test(context) &&
+            !select?.matches("[data-server], [data-source], [data-provider]")
+          )
+            continue;
           if (!el.value && !el.textContent?.trim()) continue;
           // Skip placeholder options
-          const optLabel = (el.textContent || el.label || el.value || "").trim();
+          const optLabel = (
+            el.textContent ||
+            el.label ||
+            el.value ||
+            ""
+          ).trim();
           if (!optLabel || /select|choose|pick/i.test(optLabel)) continue;
           pushControl(el, optLabel);
           if (out.length >= limit) break;
@@ -783,13 +691,16 @@ async function clickSourceControl(page, controlId) {
   }
 }
 
-function pickStreamForAttempt(state, baselineCount) {
-  const newer = state.candidateStreams.slice(baselineCount);
-  if (newer.length) return newer[newer.length - 1];
-  if (state.candidateStreams.length) {
-    return state.candidateStreams[state.candidateStreams.length - 1];
-  }
-  return state.candidateStream;
+function pickStreamForAttempt(state, attemptId, playback) {
+  const candidates = state.candidateStreams.filter(
+    (s) => s.attempt_id === attemptId && s.frame === playback.frame,
+  );
+  return (
+    candidates.find((s) => s.stream_url === playback.player_url) ??
+    candidates.filter((s) => s.http_status < 400).at(-1) ??
+    candidates.at(-1) ??
+    null
+  );
 }
 
 function buildAttemptRecord(attempt, stream, extras = {}) {
@@ -802,7 +713,7 @@ function buildAttemptRecord(attempt, stream, extras = {}) {
     http_status: stream?.http_status ?? null,
     ttfb_ms: stream?.ttfb_ms ?? null,
     speed_mbps: stream?.speed_mbps ?? null,
-    ...extras
+    ...extras,
   };
   base.display_name = displayNameForSource(base);
   return base;
@@ -813,9 +724,11 @@ function buildAttemptRecord(attempt, stream, extras = {}) {
  * targetWorking = 1 if ≤3 UI servers, else 2.
  */
 export async function probeSourcesUntilPlay(page, state, cfg, log, startTime) {
-  const remainingMs = () => Math.max(0, cfg.siteDeadTimeoutMs - (Date.now() - startTime));
+  const watchUrl = new URL(state.watchPageUrl ?? state.finalUrl ?? page.url());
+  watchUrl.hash = "";
+  const remainingMs = () =>
+    Math.max(0, cfg.siteDeadTimeoutMs - (Date.now() - startTime));
   const maxAttempts = cfg.maxSourceAttempts ?? DEFAULTS.maxSourceAttempts;
-  const perAttemptMs = cfg.sourceAttemptTimeoutMs ?? DEFAULTS.sourceAttemptTimeoutMs;
 
   if (!Array.isArray(state.workingSources)) state.workingSources = [];
 
@@ -829,12 +742,16 @@ export async function probeSourcesUntilPlay(page, state, cfg, log, startTime) {
   }
 
   for (const control of uiControls) {
-    if (!state.sourcesFound.some((s) => s.kind === "ui" && s.label === control.label)) {
+    if (
+      !state.sourcesFound.some(
+        (s) => s.kind === "ui" && s.label === control.label,
+      )
+    ) {
       state.sourcesFound.push({
         kind: "ui",
         label: control.label,
         display_name: control.display_name || control.label,
-        url: null
+        url: null,
       });
     }
   }
@@ -842,12 +759,12 @@ export async function probeSourcesUntilPlay(page, state, cfg, log, startTime) {
   const uiCount = uiControls.length;
   state.targetWorking = targetWorkingCount(uiCount, cfg);
   log.debug(
-    `Found ${uiCount} UI source control(s); target working = ${state.targetWorking}`
+    `Found ${uiCount} UI source control(s); target working = ${state.targetWorking}`,
   );
 
   const attempts = [
     { kind: "default", label: "default", clickId: null },
-    ...uiControls.map((c) => ({ kind: "ui", label: c.label, clickId: c.id }))
+    ...uiControls.map((c) => ({ kind: "ui", label: c.label, clickId: c.id })),
   ].slice(0, maxAttempts);
 
   for (const attempt of attempts) {
@@ -865,84 +782,88 @@ export async function probeSourcesUntilPlay(page, state, cfg, log, startTime) {
       continue;
     }
 
+    const attemptId = attempt.clickId ?? "initial";
+    state.activeAttemptId = attemptId;
     if (attempt.clickId) {
-      log.debug(`Trying UI source: ${attempt.label}`);
       await resetPlayback(page);
       const clicked = await clickSourceControl(page, attempt.clickId);
       if (!clicked) {
         state.sourcesTried.push(
           buildAttemptRecord(attempt, null, {
-            player_found: false,
-            stream_started: false,
-            error: "click_failed"
-          })
+            attempt_id: attemptId,
+            outcome: "click_failed",
+            reason: "Source control could not be selected",
+            error: "click_failed",
+          }),
         );
         continue;
       }
-      await humanizeDelay(200, 500);
-    } else {
-      log.debug("Trying Auto source (no UI click)");
-      if (state.workingSources.length > 0) await resetPlayback(page);
+      await humanizeDelay(150, 300);
     }
-
-    const baselineCount = state.candidateStreams.length;
-    const requireNewStream = Boolean(attempt.clickId) || state.workingSources.length > 0;
-    const streamWaitMs = Math.min(perAttemptMs, remainingMs());
-    const streamFound = await waitForStreamSignal(
-      state,
-      streamWaitMs,
-      requireNewStream ? baselineCount : 0
+    const observeMs = Math.min(
+      cfg.playbackObserveMs ?? DEFAULTS.playbackObserveMs,
+      remainingMs(),
     );
-    if (streamFound) {
-      const latest = pickStreamForAttempt(state, baselineCount);
-      log.debug(
-        `Captured stream for ${attempt.label}: ${latest?.stream_url ?? "(unknown)"}`
-      );
-    } else {
-      log.debug(`No new stream for ${attempt.label}`);
-    }
-
-    const observeMs = Math.min(2_000, Math.max(800, remainingMs() / 4));
-    const { playerFound, streamStarted: playbackAdvanced } = await detectPlayerAndPlayback(
-      page,
-      observeMs
-    );
-    const stream = pickStreamForAttempt(state, baselineCount);
-    const gotNewStream = state.candidateStreams.length > baselineCount;
-    // After the first working source, require a new network stream so we don't
-    // count the same already-playing video as a second server.
-    const countedWorking = requireNewStream
-      ? playbackAdvanced && gotNewStream
-      : playbackAdvanced;
+    const playback = await detectPlayerAndPlayback(page, observeMs);
+    const { playerFound, streamStarted: playbackAdvanced } = playback;
+    const stream = pickStreamForAttempt(state, attemptId, playback);
+    const currentUrl = new URL(page.url());
+    currentUrl.hash = "";
+    const navigatedAway = !attempt.clickId && currentUrl.href !== watchUrl.href;
+    const countedWorking =
+      playbackAdvanced &&
+      Boolean(stream) &&
+      !navigatedAway &&
+      stream.http_status < 400;
 
     log.debug(
-      `Source ${attempt.label}: player=${playerFound ? "yes" : "no"}, playback=${countedWorking ? "started" : "no"}`
+      `Source ${attempt.label}: player=${playerFound ? "yes" : "no"}, playback=${countedWorking ? "started" : "no"}`,
     );
     state.playerFound = state.playerFound || playerFound;
 
     const record = buildAttemptRecord(attempt, stream, {
       player_found: playerFound,
-      stream_started: countedWorking
+      stream_started: countedWorking,
+      attempt_id: attemptId,
+      outcome: countedWorking
+        ? "verified"
+        : navigatedAway
+          ? "page_changed"
+          : playbackAdvanced && !stream
+            ? "attribution_unverified"
+            : playback.outcome,
+      reason: navigatedAway
+        ? "Watch page navigated away during playback observation"
+        : countedWorking
+          ? "Sustained playback observed"
+          : playbackAdvanced && !stream
+            ? "Playback observed but selected source could not be attributed"
+            : playback.media_error
+              ? `Media error ${playback.media_error}`
+              : playerFound
+                ? "Playback did not advance consistently during observation"
+                : "No visible content player found",
+      observed_ms: playback.observed_ms,
+      playback_seconds: playback.playback_seconds ?? 0,
+      buffering_samples: playback.buffering_samples ?? 0,
+      media_error: playback.media_error ?? null,
+      player_url: playback.player_url ?? null,
+      frame_url: playback.frame_url ?? null,
     });
     state.sourcesTried.push(record);
 
     if (countedWorking) {
       state.streamStarted = true;
-      state.candidateStream = stream ?? state.candidateStream;
-      const working = {
-        label: attempt.label,
-        kind: attempt.kind,
-        display_name: record.display_name,
-        stream_url: stream?.stream_url ?? null,
-        http_status: stream?.http_status ?? null,
-        ttfb_ms: stream?.ttfb_ms ?? null,
-        speed_mbps: stream?.speed_mbps ?? null
-      };
+      const working = { ...record };
       if (
         !state.workingSources.some(
           (w) =>
             (w.label && w.label === working.label) ||
-            (w.stream_url && working.stream_url && w.stream_url === working.stream_url)
+            (w.stream_url &&
+              working.stream_url &&
+              new URL(w.stream_url).origin + new URL(w.stream_url).pathname ===
+                new URL(working.stream_url).origin +
+                  new URL(working.stream_url).pathname),
         )
       ) {
         state.workingSources.push(working);
@@ -950,7 +871,7 @@ export async function probeSourcesUntilPlay(page, state, cfg, log, startTime) {
       state.workingSource = pickBestWorking(state.workingSources);
       log.debug(
         `Working source (${state.workingSources.length}/${state.targetWorking}): ${working.display_name}` +
-          (stream?.stream_url ? ` → ${stream.stream_url}` : "")
+          (stream?.stream_url ? ` → ${stream.stream_url}` : ""),
       );
     }
   }
@@ -962,21 +883,23 @@ export async function probeSourcesUntilPlay(page, state, cfg, log, startTime) {
     sourcesTried: state.sourcesTried,
     workingSource: state.workingSource,
     workingSources: state.workingSources,
-    targetWorking: state.targetWorking
+    targetWorking: state.targetWorking,
   };
 }
 
 /** Shared result object for both runners. */
 export function buildProbeResult(state, engine, startTime, cfg) {
   const timedOut = Date.now() - startTime > cfg.siteDeadTimeoutMs;
-  const hardDown = state.errors.some((e) => isHardNavigationError(e));
+  const hardDown = state.navigationErrors.some((e) => isHardNavigationError(e));
   const navigated =
     Boolean(state.finalUrl) && !/^about:blank/i.test(state.finalUrl || "");
-  const isUp = navigated && !hardDown;
+  const isUp =
+    state.streamStarted ||
+    (navigated && !hardDown && !(state.pageHttpStatus >= 500));
 
   const workingSources = state.workingSources ?? [];
   const winner = pickBestWorking(workingSources) ?? state.workingSource;
-  const stream = state.candidateStream;
+  const stream = winner ?? state.sourcesTried.at(-1) ?? null;
   const sourcesFound = state.sourcesFound;
   const sourcesTried = state.sourcesTried;
   const targetWorking = state.targetWorking ?? 1;
@@ -990,7 +913,7 @@ export function buildProbeResult(state, engine, startTime, cfg) {
     workingSources.length < targetWorking &&
     targetWorking > 1
   ) {
-    const note = `Partial reliability: ${workingSources.length}/${targetWorking} working sources`;
+    const note = `Source coverage: ${workingSources.length}/${targetWorking} working sources`;
     errorMessage = errorMessage ? `${errorMessage} | ${note}` : note;
   } else if (timedOut && !state.streamStarted) {
     errorMessage = errorMessage || "No player/stream within site timeout";
@@ -998,6 +921,7 @@ export function buildProbeResult(state, engine, startTime, cfg) {
 
   return {
     is_up: isUp,
+    page_http_status: state.pageHttpStatus,
     final_url: state.finalUrl,
     player_found: state.playerFound,
     stream_started: state.streamStarted || workingSources.length > 0,
@@ -1015,11 +939,11 @@ export function buildProbeResult(state, engine, startTime, cfg) {
       : null,
     working_sources: workingSources.map((w) => ({
       ...w,
-      display_name: displayNameForSource(w)
+      display_name: displayNameForSource(w),
     })),
     target_working: targetWorking,
     title: state.contentTitle || guessTitleFromUrl(state.finalUrl) || null,
     error_message: errorMessage || null,
-    engine
+    engine,
   };
 }
