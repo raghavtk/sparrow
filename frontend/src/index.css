@@ -1445,3 +1445,61 @@ summary::-webkit-details-marker {
   margin-top: 10px;
   background: #141b20;
 }
+
+.results-controls {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.layout-toggle {
+  display: flex;
+  gap: 3px;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+}
+.layout-toggle button {
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  padding: 6px 10px;
+  font-size: 11px;
+}
+.layout-toggle button[aria-pressed="true"] {
+  background: #273b32;
+  color: var(--mint);
+}
+.freshness-note {
+  color: var(--muted);
+  font-size: 11px;
+  margin: 0 0 18px;
+}
+.compact-results {
+  grid-template-columns: minmax(0, 1fr);
+}
+.compact-results .card-main {
+  padding: 20px 24px;
+}
+.compact-results .source-recommendation {
+  margin-top: 14px;
+  padding: 13px 16px;
+}
+.compact-results .watch-path {
+  display: none;
+}
+@media (max-width: 640px) {
+  .results-caption {
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+  .results-controls {
+    width: 100%;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .compact-results .card-main {
+    padding: 16px;
+  }
+}

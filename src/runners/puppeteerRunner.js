@@ -1,4 +1,4 @@
-import puppeteerExtra from "puppeteer-extra";
+import { addExtra } from "puppeteer-extra";
 import puppeteer from "puppeteer";
 import StealthPlugin from "puppeteer-extra-plugin-stealth";
 import AdblockerPlugin from "puppeteer-extra-plugin-adblocker";
@@ -19,6 +19,7 @@ import {
   tryAcceptCookies,
 } from "../probers/common.js";
 
+const puppeteerExtra = addExtra(puppeteer);
 puppeteerExtra.use(StealthPlugin());
 
 puppeteerExtra.use(
@@ -155,7 +156,8 @@ export async function runWithPuppeteer(siteUrl, options = {}) {
       "--disable-dev-shm-usage",
     ],
     executablePath:
-      process.env.SPARROW_BROWSER_EXECUTABLE || puppeteer.executablePath(),
+      process.env.SPARROW_BROWSER_EXECUTABLE ||
+      (await puppeteer.executablePath()),
   });
   const page = await browser.newPage();
   await page.setUserAgent(fingerprint.userAgent);

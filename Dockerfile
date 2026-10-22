@@ -1,11 +1,11 @@
-FROM node:22.14.0-bookworm-slim AS frontend
+FROM node:22.23.4-bookworm-slim AS frontend
 WORKDIR /build
 COPY frontend/package*.json ./
 RUN npm ci --no-audit --no-fund
 COPY frontend/ ./
 RUN npm run build
 
-FROM node:22.14.0-bookworm-slim
+FROM node:22.23.4-bookworm-slim
 ENV NODE_ENV=production HOST=0.0.0.0 PORT=3001 \
     PLAYWRIGHT_BROWSERS_PATH=/opt/browsers PUPPETEER_SKIP_DOWNLOAD=true \
     SPARROW_DB_PATH=/data/results.db

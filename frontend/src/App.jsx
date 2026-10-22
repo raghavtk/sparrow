@@ -4,6 +4,7 @@ import Icon from "./components/Icon";
 import LinkInput from "./components/LinkInput";
 import RunMonitor from "./components/RunMonitor";
 import ResultsTable from "./components/ResultsTable";
+import { isRecent } from "./resultPresentation";
 
 const NAVIGATION = [
   { id: "overview", label: "Overview", icon: "grid" },
@@ -20,7 +21,9 @@ export default function App() {
   const rows = sparrow.sites.map(
     (url) => latest.get(url) ?? { site_url: url, classification: "UNCHECKED" },
   );
-  const played = rows.filter((r) => r.stream_started).length;
+  const played = rows.filter(
+    (r) => r.stream_started && isRecent(r, sparrow.now),
+  ).length;
   const untested = rows.filter((r) => r.classification === "UNCHECKED").length;
   const needsAttention = rows.length - played - untested;
 
@@ -62,6 +65,15 @@ export default function App() {
             Observed, timestamped, and ready to recheck.
           </span>
         </div>
+        {sparrow.session?.privateAccess && sparrow.session?.authenticated && (
+          <button
+            className="button secondary"
+            disabled={sparrow.busy}
+            onClick={() => sparrow.logout().catch(() => {})}
+          >
+            Sign out
+          </button>
+        )}
         <div className="workspace-status">
           <span className="live-dot" />
           {sparrow.session?.privateAccess
@@ -160,10 +172,10 @@ export default function App() {
                         <Icon name="check" />
                       </span>
                       <div>
-                        <span className="stat-label">Playback observed</span>
+                        <span className="stat-label">Played recently</span>
                         <strong>{played.toString().padStart(2, "0")}</strong>
                         <span className="stat-description">
-                          Pages that played in their latest check
+                          Playback observed within the last hour
                         </span>
                       </div>
                     </div>
@@ -177,7 +189,7 @@ export default function App() {
                           {needsAttention.toString().padStart(2, "0")}
                         </strong>
                         <span className="stat-description">
-                          Unavailable or playback unverified
+                          Unverified, unavailable, or due for recheck
                         </span>
                       </div>
                     </div>

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { request } from "../api";
 
 export default function useSparrow({ includeHistory = false } = {}) {
@@ -13,19 +13,23 @@ export default function useSparrow({ includeHistory = false } = {}) {
   const [connected, setConnected] = useState(true);
   const [now, setNow] = useState(() => Date.now());
 
+  const sessionGeneration = useRef(0);
   const refresh = useCallback(async () => {
+    const generation = sessionGeneration.current;
     try {
       const [saved, latest, jobs] = await Promise.all([
         request("/sites"),
         request("/results"),
         request("/runs/latest"),
       ]);
+      if (generation !== sessionGeneration.current) return;
       setSites(saved.sites);
       setResults(latest.results);
       setRun(jobs.run);
       setNow(Date.now());
       setError("");
     } catch (err) {
+      if (generation !== sessionGeneration.current) return;
       if (err.status === 401) setSession({ authenticated: false });
       setError(err.message);
     } finally {
@@ -120,6 +124,16 @@ export default function useSparrow({ includeHistory = false } = {}) {
     connected,
     refresh,
     now,
+    logout: () =>
+      action(async () => {
+        const session = await request("/session", { method: "DELETE" });
+        sessionGeneration.current += 1;
+        setSites([]);
+        setResults([]);
+        setRun(null);
+        setEvents([]);
+        setSession(session);
+      }),
     login: (token) =>
       action(async () =>
         setSession(

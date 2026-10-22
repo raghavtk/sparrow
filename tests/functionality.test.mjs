@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chromium } from "playwright";
 import { createApp } from "../server.js";
+import { runWithPuppeteer } from "../src/runners/puppeteerRunner.js";
 import { runWithPlaywright } from "../src/runners/playwrightRunner.js";
 import { createBrowserPool } from "../src/browsers/pool.js";
 import { classifyResult } from "../src/classifier.js";
@@ -467,4 +468,214 @@ test("a marked advertising iframe cannot qualify a stalled content player as wor
   assert.equal(result.stream_started, false);
   assert.equal(result.working_source, null);
   assert.equal(result.http_status, null);
+});
+
+test("signing out revokes a copied session cookie without revoking another browser", async () => {
+  const instance = await service({ token: "private-fixture-key" });
+  const signIn = async () => {
+    const login = await api(instance, "/api/session", "POST", {
+      token: "private-fixture-key",
+    });
+    return { Cookie: login.headers.get("set-cookie").split(";")[0] };
+  };
+  const first = await signIn();
+  const second = await signIn();
+  assert.equal(
+    (await api(instance, "/api/sites", "GET", undefined, first)).status,
+    200,
+  );
+  const logout = await api(
+    instance,
+    "/api/session",
+    "DELETE",
+    undefined,
+    first,
+  );
+  assert.equal(logout.status, 200);
+  assert.equal(logout.body.authenticated, false);
+  assert.match(logout.headers.get("set-cookie"), /Expires=Thu, 01 Jan 1970/);
+  assert.equal(
+    (await api(instance, "/api/sites", "GET", undefined, first)).status,
+    401,
+  );
+  assert.equal(
+    (await api(instance, "/api/sites", "GET", undefined, second)).status,
+    200,
+  );
+  assert.equal(
+    (
+      await api(instance, "/api/sites", "GET", undefined, {
+        Authorization: "Bearer private-fixture-key",
+      })
+    ).status,
+    200,
+  );
+});
+
+test("Puppeteer fallback observes real iframe playback with attributed media", async () => {
+  const pool = createBrowserPool();
+  try {
+    const result = await runWithPuppeteer(fixtures.origin + "/watch/iframe", {
+      browserPool: pool,
+      playbackObserveMs: 2000,
+      siteDeadTimeoutMs: 18_000,
+    });
+    assert.equal(classify(result), "WORKING");
+    assert.equal(
+      result.working_source.stream_url,
+      fixtures.origin + "/clip.webm",
+    );
+    assert.equal(result.working_source.frame_url, fixtures.origin + "/player");
+  } finally {
+    await pool.close();
+  }
+});
+
+test("private dashboard signs out, hides saved data, and permits a fresh login", async () => {
+  const instance = await service({ token: "browser-fixture-key" });
+  const page = await browser.newPage();
+  try {
+    await page.goto(instance.origin);
+    await page
+      .getByLabel("Access key", { exact: true })
+      .fill("browser-fixture-key");
+    await page
+      .getByRole("button", { name: "Unlock workspace", exact: true })
+      .click();
+    await page.getByRole("button", { name: "Sign out", exact: true }).waitFor();
+    await page.getByRole("button", { name: "Sign out", exact: true }).click();
+    await page.getByLabel("Access key", { exact: true }).waitFor();
+    assert.equal(
+      await page.getByRole("textbox", { name: "Search watch pages" }).count(),
+      0,
+    );
+    await page.reload();
+    await page
+      .getByLabel("Access key", { exact: true })
+      .fill("browser-fixture-key");
+    await page
+      .getByRole("button", { name: "Unlock workspace", exact: true })
+      .click();
+    await page.getByRole("button", { name: "Sign out", exact: true }).waitFor();
+  } finally {
+    await page.close();
+  }
+});
+
+test("dashboard separates recent playback from old evidence and preserves details in compact view", async () => {
+  const instance = await service();
+  const urls = ["fresh", "old", "unavailable", "new"].map(
+    (slug) => fixtures.origin + "/watch/" + slug,
+  );
+  for (const url of urls) instance.store.add(url);
+  const now = Date.now();
+  const rows = [
+    {
+      id: 900,
+      site_url: urls[0],
+      title: "Fresh Film",
+      classification: "WORKING",
+      stream_started: true,
+      is_up: true,
+      checked_at: new Date(now - 5 * 60000).toISOString(),
+    },
+    {
+      id: 901,
+      site_url: urls[1],
+      title: "Older Film",
+      classification: "WORKING",
+      stream_started: true,
+      is_up: true,
+      checked_at: new Date(now - 2 * 3600000).toISOString(),
+    },
+    {
+      id: 902,
+      site_url: urls[2],
+      title: "Unavailable Film",
+      classification: "DOWN",
+      stream_started: false,
+      is_up: false,
+      checked_at: new Date(now - 60000).toISOString(),
+    },
+  ];
+  const page = await browser.newPage();
+  try {
+    await page.route("**/api/results", (route) =>
+      route.fulfill({ json: { results: rows } }),
+    );
+    await page.goto(instance.origin);
+    await page
+      .getByRole("heading", { name: "Fresh Film", exact: true })
+      .waitFor();
+    await page
+      .getByRole("button", { name: "Played recently 1", exact: true })
+      .click();
+    assert.deepEqual(await page.locator(".result-card h3").allTextContents(), [
+      "Fresh Film",
+    ]);
+    await page
+      .getByRole("button", { name: "Recheck due 1", exact: true })
+      .click();
+    assert.deepEqual(await page.locator(".result-card h3").allTextContents(), [
+      "Older Film",
+    ]);
+    await page
+      .getByText(
+        "This source played in an earlier check. Recheck before relying on it.",
+        { exact: true },
+      )
+      .waitFor();
+    await page
+      .getByRole("button", { name: "Needs attention 2", exact: true })
+      .click();
+    assert.deepEqual(
+      (await page.locator(".result-card h3").allTextContents()).sort(),
+      ["Older Film", "Unavailable Film"],
+    );
+    await page.getByRole("button", { name: "Compact", exact: true }).click();
+    assert.equal(
+      await page
+        .getByRole("button", { name: "Compact", exact: true })
+        .getAttribute("aria-pressed"),
+      "true",
+    );
+    const card = page
+      .locator(".result-card")
+      .filter({
+        has: page.getByRole("heading", {
+          name: "Unavailable Film",
+          exact: true,
+        }),
+      });
+    await card
+      .getByText(
+        "The watch page was unavailable. Confirm the URL still opens before trying another check.",
+        { exact: true },
+      )
+      .waitFor();
+    await card
+      .getByText("Playback evidence & history", { exact: true })
+      .click();
+    await card
+      .getByText("No source-attempt evidence was recorded for this check.", {
+        exact: true,
+      })
+      .waitFor();
+    await page.setViewportSize({ width: 390, height: 844 });
+    assert.equal(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= innerWidth,
+      ),
+      true,
+    );
+    await page
+      .getByRole("button", { name: "Not checked 1", exact: true })
+      .click();
+    assert.equal(await page.locator(".result-card").count(), 1);
+    await page
+      .getByText("Run a check to see which source plays.", { exact: true })
+      .waitFor();
+  } finally {
+    await page.close();
+  }
 });

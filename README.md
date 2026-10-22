@@ -8,7 +8,7 @@ A check is a short, timestamped observation. It cannot guarantee that a stream w
 
 ## Quick start
 
-Use **Node 22.14 or later within Node 22 LTS**. The tested version is pinned in `.nvmrc`.
+Use **Node 22.23.4 or later within Node 22 LTS**. The tested version is pinned in `.nvmrc`.
 
 ```sh
 npm ci
@@ -28,7 +28,7 @@ For development, run `npm run dev`. This starts the API and Vite; open [the deve
 
 ## Using the dashboard
 
-- **Overview** shows one latest result per saved page, including playback status, source instructions, check age, popups, and access challenges. Search, filter, sort, or recheck individual pages.
+- **Overview** shows one latest result per saved page, including playback status, source instructions, check age, popups, and access challenges. Search, filter, sort, or recheck individual pages. Choose Cards or Compact layout; evidence and history remain available in either view. “Played recently” includes successful checks from the last hour. “Recheck due” finds older observations, which also count as needing attention.
 - **Saved pages** lets you add and remove watch URLs. Listing discovery offers up to 30 candidate links from a listing page; choose the intended title before saving and checking it. Discovery recognizes obvious same-origin watch, movie, episode, event, and live links.
 - **Activity** shows progress, saved events, completion or errors, and a cancel button. Refreshing or closing a tab does not cancel a check.
 
@@ -72,7 +72,26 @@ Configuration is read from environment variables:
 
 Authentication uses HttpOnly, SameSite session cookies. API clients can send `Authorization: Bearer <token>`. The frontend does not persist the access key.
 
+Use **Sign out** in a private workspace to revoke that browser's session. Signing out does not cancel an active check. Other browser sessions stay signed in.
+
+### Rotating the access key
+
+Sparrow does not use a third-party API key. Its optional `SPARROW_ACCESS_TOKEN` is a shared access key for this dashboard.
+
+1. Generate a new random token in your password manager or secret manager.
+2. Replace `SPARROW_ACCESS_TOKEN` in the environment that starts Sparrow. Do not commit the value or put it in frontend code.
+3. Restart the server. For Compose, recreate the container with the new environment: `docker compose up -d --force-recreate`.
+4. Sign in with the new key and update any API clients. The old bearer token and all previous session cookies will stop working after the old server process stops.
+
+If a credential may have crossed a compromised TLS connection, update the runtime, browser, operating-system trust store, and any proxy first. Replacing a key does not fix certificate validation. Never work around certificate errors by disabling verification. Third-party credentials must be rotated at their issuing service and updated in each deployment that uses them.
+
 The dashboard accepts at most 30 saved pages and 3 parallel probes. One check job or listing discovery runs at a time. Each browser engine has a page deadline, and cancellation closes active workers.
+
+### Checking certificate trust
+
+Run `npm run security:tls` after runtime, browser, or trust-store updates. This opt-in network diagnostic checks normal HTTPS and two compromised-chain endpoints linked from [Cloudflare's eMudhra incident guidance](https://blog.cloudflare.com/emudhra-certificate-compromise), using Node and both browser engines. It exits unsuccessfully if a revoked chain is accepted, a browser cannot launch, or a check is inconclusive. It does not run in the offline functional suite.
+
+During the October 22, 2026 assessment, patched Node 22.23.4 rejected both chains, but fresh Playwright and Puppeteer browser installations still accepted the direct eMudhra test chain. Updating npm packages alone did not resolve browser revocation. Treat those probe paths as affected until a diagnostic confirms rejection. Use a browser environment with verified revocation enforcement or a TLS-validating egress gateway; do not send credentials through an affected probe. A passing result covers the tested paths and chains only.
 
 ### Shared deployment
 
@@ -120,6 +139,7 @@ Requests with a body use JSON. Protected deployments require a session cookie or
 
 - `GET /api/session`: inspect authentication status.
 - `POST /api/session` with `{ "token": "..." }`: sign in.
+- `DELETE /api/session`: revoke the current browser session and clear its cookie.
 - `GET /api/sites`: list saved watch URLs.
 - `POST /api/sites` with `{ "url": "https://..." }`: save a watch URL.
 - `DELETE /api/sites` with the same body: remove a watch URL.

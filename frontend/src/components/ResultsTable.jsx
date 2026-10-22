@@ -1,5 +1,6 @@
 import { useState } from "react";
 import Icon from "./Icon";
+import { isRecent, recheckDue, nextStep } from "../resultPresentation";
 import {
   request,
   relativeTime,
@@ -30,6 +31,7 @@ const FILTERS = [
   { id: "plays", label: "Played recently" },
   { id: "attention", label: "Needs attention" },
   { id: "unchecked", label: "Not checked" },
+  { id: "stale", label: "Recheck due" },
 ];
 
 function Badge({ status }) {
@@ -135,8 +137,7 @@ function ResultCard({ row, now, onRecheck, disabled }) {
   const sourceUnverified = row.sources_tried?.some(
     (attempt) => attempt.outcome === "attribution_unverified",
   );
-  const stale =
-    row.checked_at && now - new Date(row.checked_at).getTime() > 60 * 60 * 1000;
+  const stale = recheckDue(row, now);
   const openUrl = safeWebUrl(row.site_url);
   async function loadHistory() {
     setLoadingHistory(true);
@@ -178,7 +179,11 @@ function ResultCard({ row, now, onRecheck, disabled }) {
           <Icon name={row.stream_started ? "play" : "activity"} size={19} />
           <div>
             <span className="tiny-label">
-              {row.stream_started ? "SOURCE TO CHOOSE" : "PLAYBACK RESULT"}
+              {row.stream_started
+                ? stale
+                  ? "LAST OBSERVED SOURCE"
+                  : "SOURCE TO CHOOSE"
+                : "PLAYBACK RESULT"}
             </span>
             <strong>
               {row.stream_started
@@ -199,12 +204,12 @@ function ResultCard({ row, now, onRecheck, disabled }) {
             </strong>
             <p>
               {row.stream_started
-                ? best?.kind === "ui"
-                  ? `Open the watch page and select “${sourceName(best)}” in its source menu.`
-                  : "Open the watch page and use its default player."
-                : row.classification === "UNCHECKED"
-                  ? "Run a check to see which source plays."
-                  : "Recheck for fresh evidence or inspect the source attempts below."}
+                ? stale
+                  ? "This source played in an earlier check. Recheck before relying on it."
+                  : best?.kind === "ui"
+                    ? `Open the watch page and select “${sourceName(best)}” in its source menu.`
+                    : "Open the watch page and use its default player."
+                : nextStep(row)}
             </p>
           </div>
         </div>
@@ -315,13 +320,15 @@ export default function ResultsTable({
   const [filter, setFilter] = useState("all");
   const [query, setQuery] = useState("");
   const [sort, setSort] = useState("recent");
+  const [layout, setLayout] = useState("cards");
   const matches = (row, id) =>
     id === "all" ||
-    (id === "plays" && row.stream_started) ||
+    (id === "plays" && row.stream_started && isRecent(row, now)) ||
     (id === "attention" &&
-      !row.stream_started &&
+      (!row.stream_started || recheckDue(row, now)) &&
       row.classification !== "UNCHECKED") ||
-    (id === "unchecked" && row.classification === "UNCHECKED");
+    (id === "unchecked" && row.classification === "UNCHECKED") ||
+    (id === "stale" && recheckDue(row, now));
   const visible = rows
     .filter(
       (row) =>
@@ -387,18 +394,42 @@ export default function ResultsTable({
             ? "matching your filters"
             : "in your collection"}
         </span>
-        <label>
-          Sort by{" "}
-          <select
-            aria-label="Sort results"
-            value={sort}
-            onChange={(e) => setSort(e.target.value)}
+        <div className="results-controls">
+          <div
+            className="layout-toggle"
+            role="group"
+            aria-label="Results layout"
           >
-            <option value="recent">Most recent</option>
-            <option value="playback">Playback, then response</option>
-          </select>
-        </label>
+            <button
+              aria-pressed={layout === "cards"}
+              onClick={() => setLayout("cards")}
+            >
+              Cards
+            </button>
+            <button
+              aria-pressed={layout === "compact"}
+              onClick={() => setLayout("compact")}
+            >
+              Compact
+            </button>
+          </div>
+          <label>
+            Sort by{" "}
+            <select
+              aria-label="Sort results"
+              value={sort}
+              onChange={(e) => setSort(e.target.value)}
+            >
+              <option value="recent">Most recent</option>
+              <option value="playback">Playback, then response</option>
+            </select>
+          </label>
+        </div>
       </div>
+      <p className="freshness-note">
+        Recent means checked within the last hour. Older observations stay in
+        history and need a recheck.
+      </p>
       {loading ? (
         <div className="results-grid" aria-label="Loading results">
           {[1, 2].map((i) => (
@@ -436,7 +467,9 @@ export default function ResultsTable({
           </button>
         </div>
       ) : (
-        <div className="results-grid">
+        <div
+          className={`results-grid ${layout === "compact" ? "compact-results" : ""}`}
+        >
           {visible.map((row) => (
             <ResultCard
               key={`${row.site_url}:${row.id ?? "unchecked"}`}

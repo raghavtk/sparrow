@@ -72,15 +72,17 @@ export function createApp({
     }
     next();
   });
-  const authorized = (req) => {
-    if (!token) return true;
-    if (equalSecret(req.headers.authorization?.replace(/^Bearer /, ""), token))
-      return true;
-    const session = req.headers.cookie
+  const sessionId = (req) =>
+    req.headers.cookie
       ?.split(";")
       .map((part) => part.trim())
       .find((part) => part.startsWith("sparrow_session="))
       ?.slice(16);
+  const authorized = (req) => {
+    if (!token) return true;
+    if (equalSecret(req.headers.authorization?.replace(/^Bearer /, ""), token))
+      return true;
+    const session = sessionId(req);
     return sessions.get(session) > Date.now();
   };
   app.get("/api/session", (req, res) =>
@@ -112,6 +114,15 @@ export function createApp({
       maxAge: 12 * 60 * 60 * 1000,
     });
     res.json({ authenticated: true, privateAccess: Boolean(token) });
+  });
+  app.delete("/api/session", (req, res) => {
+    sessions.delete(sessionId(req));
+    res.clearCookie("sparrow_session", {
+      httpOnly: true,
+      sameSite: "strict",
+      secure: req.secure,
+    });
+    res.json({ authenticated: !token, privateAccess: Boolean(token) });
   });
   app.use("/api", (req, res, next) =>
     authorized(req)
@@ -178,11 +189,9 @@ export function createApp({
       concurrency < 1 ||
       concurrency > MAX_CONCURRENCY
     ) {
-      return res
-        .status(400)
-        .json({
-          error: `Concurrency must be between 1 and ${MAX_CONCURRENCY}`,
-        });
+      return res.status(400).json({
+        error: `Concurrency must be between 1 and ${MAX_CONCURRENCY}`,
+      });
     }
     const normalized = [...new Set(await Promise.all(sites.map(validateUrl)))];
     if (normalized.some((url) => !store.sites().includes(url)))
@@ -229,10 +238,14 @@ export function createApp({
       return res.end();
     }
     const unsubscribe = jobs.subscribe(run.id, (id, event) => {
+      if (!authorized(req)) return res.end();
       send(id, event);
       if (event.type === "job_done") res.end();
     });
-    const heartbeat = setInterval(() => res.write(": heartbeat\n\n"), 15_000);
+    const heartbeat = setInterval(() => {
+      if (!authorized(req)) return res.end();
+      res.write(": heartbeat\n\n");
+    }, 15_000);
     res.on("close", () => {
       clearInterval(heartbeat);
       unsubscribe();

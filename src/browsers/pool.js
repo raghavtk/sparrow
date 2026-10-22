@@ -1,10 +1,11 @@
 import { guardPlaywrightContext, guardPuppeteerPage } from "../security.js";
 import { chromium } from "playwright";
 import StealthPlugin from "puppeteer-extra-plugin-stealth";
-import puppeteerExtra from "puppeteer-extra";
+import { addExtra } from "puppeteer-extra";
 import puppeteer from "puppeteer";
 import AdblockerPlugin from "puppeteer-extra-plugin-adblocker";
 
+const puppeteerExtra = addExtra(puppeteer);
 puppeteerExtra.use(StealthPlugin());
 puppeteerExtra.use(
   AdblockerPlugin({
@@ -69,7 +70,7 @@ export function createBrowserPool({
           args: LAUNCH_ARGS,
           executablePath:
             process.env.SPARROW_BROWSER_EXECUTABLE ||
-            puppeteer.executablePath(),
+            (await puppeteer.executablePath()),
         })
         .then((browser) => {
           ppBrowser = browser;
